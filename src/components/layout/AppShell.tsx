@@ -63,8 +63,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </a>
 
       <header className="bg-[var(--bg-surface)] border-b-2 border-[var(--border-strong)]">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-2.5 space-y-2.5 md:space-y-0">
-          <div className="flex flex-wrap items-center justify-between gap-2.5">
+        <div className="max-w-5xl mx-auto px-3.5 sm:px-6 py-2 sm:py-2.5 space-y-2 md:space-y-0">
+          <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-3 lg:gap-4 min-w-0">
               <Link
                 href="/"
@@ -123,13 +123,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </nav>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setDonateOpen(true)}
-                className="btn-secondary !px-3 text-xs sm:text-sm"
+                className="btn-secondary !px-2.5 sm:!px-3 text-xs sm:text-sm"
               >
-                <QrCodeIcon className="w-4 h-4" />
+                <QrCodeIcon className="w-4 h-4 shrink-0" />
                 <span>Donasi</span>
               </button>
 
@@ -137,7 +137,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={toggleTheme}
                 aria-label={isDark ? "Ubah ke tampilan terang" : "Ubah ke tampilan gelap"}
-                className="btn-secondary !px-3 min-w-[44px] text-xs sm:text-sm"
+                className="btn-secondary !px-2.5 sm:!px-3 min-w-[44px] text-xs sm:text-sm"
               >
                 <ThemeLampIcon isDark={isDark} className="w-4 h-4 shrink-0" />
                 <span className="hidden sm:inline">{isDark ? "Terang" : "Gelap"}</span>
@@ -148,44 +148,46 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {/* Dedicated mobile 3-tab row so primary features and usage guide stay one thumb tap away */}
           <nav
             aria-label="Menu seluler"
-            className="md:hidden grid grid-cols-3 gap-1.5 pt-1 border-t border-[var(--border-subtle)]"
+            className="md:hidden grid grid-cols-3 gap-2 pt-1.5 border-t border-[var(--border-subtle)]"
           >
             <Link
               href="/"
               aria-current={pathname === "/" ? "page" : undefined}
-              className={`inline-flex items-center justify-center gap-1 min-h-[44px] px-1.5 rounded-[6px] text-xs font-semibold border text-center ${
+              className={`inline-flex items-center justify-center gap-1.5 min-h-[44px] px-2 rounded-[6px] text-xs font-semibold border whitespace-nowrap ${
                 pathname === "/"
                   ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
                   : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)]"
               }`}
             >
-              <ReceiptSheetIcon className="hidden min-[380px]:inline-block w-3.5 h-3.5 shrink-0" />
-              <span>Rekap Nota</span>
+              <ReceiptSheetIcon className="hidden min-[430px]:inline-block w-3.5 h-3.5 shrink-0" />
+              <span className="min-[400px]:hidden">Nota</span>
+              <span className="hidden min-[400px]:inline">Rekap Nota</span>
             </Link>
 
             <Link
               href="/kompres"
               aria-current={pathname.startsWith("/kompres") ? "page" : undefined}
-              className={`inline-flex items-center justify-center gap-1 min-h-[44px] px-1.5 rounded-[6px] text-xs font-semibold border text-center ${
+              className={`inline-flex items-center justify-center gap-1.5 min-h-[44px] px-2 rounded-[6px] text-xs font-semibold border whitespace-nowrap ${
                 pathname.startsWith("/kompres")
                   ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
                   : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)]"
               }`}
             >
-              <PhotoCompressIcon className="hidden min-[380px]:inline-block w-3.5 h-3.5 shrink-0" />
-              <span>Kompres Foto</span>
+              <PhotoCompressIcon className="hidden min-[430px]:inline-block w-3.5 h-3.5 shrink-0" />
+              <span className="min-[400px]:hidden">Kompres</span>
+              <span className="hidden min-[400px]:inline">Kompres Foto</span>
             </Link>
 
             <Link
               href="/panduan"
               aria-current={pathname.startsWith("/panduan") ? "page" : undefined}
-              className={`inline-flex items-center justify-center gap-1 min-h-[44px] px-1.5 rounded-[6px] text-xs font-semibold border text-center ${
+              className={`inline-flex items-center justify-center gap-1.5 min-h-[44px] px-2 rounded-[6px] text-xs font-semibold border whitespace-nowrap ${
                 pathname.startsWith("/panduan")
                   ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
                   : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)]"
               }`}
             >
-              <BookGuideIcon className="hidden min-[380px]:inline-block w-3.5 h-3.5 shrink-0" />
+              <BookGuideIcon className="hidden min-[430px]:inline-block w-3.5 h-3.5 shrink-0" />
               <span>Cara Pakai</span>
             </Link>
           </nav>

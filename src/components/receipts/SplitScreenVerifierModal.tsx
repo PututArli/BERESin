@@ -7,6 +7,7 @@ import {
   AlertTriangleIcon,
   CloseXIcon,
   PlusBoxIcon,
+  RefreshBatchIcon,
   Rotate90Icon,
   StampCheckIcon,
   TrashBinIcon,
@@ -22,6 +23,7 @@ interface SplitScreenVerifierModalProps {
   onSelectReceipt: (id: string) => void;
   onSaveReceipt: (updated: Receipt, moveNext: boolean) => Promise<void>;
   onDeleteReceipt: (id: string) => Promise<void>;
+  onReanalyzeReceipt?: (receipt: Receipt) => Promise<Receipt | null>;
 }
 
 const PAYMENT_METHODS: PaymentMethod[] = [
@@ -32,6 +34,10 @@ const PAYMENT_METHODS: PaymentMethod[] = [
   "Lainnya",
 ];
 
+function clampValue(val: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, val));
+}
+
 export function SplitScreenVerifierModal({
   project,
   receipts,
@@ -40,6 +46,7 @@ export function SplitScreenVerifierModal({
   onSelectReceipt,
   onSaveReceipt,
   onDeleteReceipt,
+  onReanalyzeReceipt,
 }: SplitScreenVerifierModalProps) {
   const activeIndex = useMemo(
     () => receipts.findIndex((r) => r.id === activeReceiptId),
@@ -52,8 +59,9 @@ export function SplitScreenVerifierModal({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragOriginRef = useRef({ x: 0, y: 0 });
+  const viewerBoxRef = useRef<HTMLDivElement | null>(null);
 
-  const [mobilePane, setMobilePane] = useState<"both" | "image" | "form">("both");
+  const [mobileTab, setMobileTab] = useState<"form" | "image">("form");
 
   const [merchantName, setMerchantName] = useState("");
   const [transactionDate, setTransactionDate] = useState("");
@@ -65,39 +73,74 @@ export function SplitScreenVerifierModal({
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<ReceiptItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const modalRef = useRef<HTMLDivElement | null>(null);
+
+  const syncFormFromReceipt = useCallback(
+    (r: Receipt) => {
+      setMerchantName(r.merchantName);
+      setTransactionDate(r.transactionDate ?? "");
+      setCategory(r.category || project.categories[0] || "Lain-lain");
+      setPaymentMethod(r.paymentMethod || "Tunai");
+      setTaxAndService(r.taxAndService || 0);
+      setDiscount(r.discount || 0);
+      setTotalAmount(r.totalAmount || 0);
+      setNotes(r.notes || "");
+      setItems(
+        r.items.length > 0
+          ? r.items.map((it) => ({ ...it }))
+          : [
+              {
+                id: crypto.randomUUID(),
+                receiptId: r.id,
+                itemName: "",
+                quantity: 1,
+                unitPrice: r.totalAmount || 0,
+                totalPrice: r.totalAmount || 0,
+              },
+            ]
+      );
+      setFormError(null);
+    },
+    [project.categories]
+  );
 
   useEffect(() => {
     if (!receipt) return;
     setZoom(1);
     setRotation(0);
     setPan({ x: 0, y: 0 });
-    setMerchantName(receipt.merchantName);
-    setTransactionDate(receipt.transactionDate ?? "");
-    setCategory(receipt.category || project.categories[0] || "Lain-lain");
-    setPaymentMethod(receipt.paymentMethod || "Tunai");
-    setTaxAndService(receipt.taxAndService || 0);
-    setDiscount(receipt.discount || 0);
-    setTotalAmount(receipt.totalAmount || 0);
-    setNotes(receipt.notes || "");
-    setItems(
-      receipt.items.length > 0
-        ? receipt.items.map((it) => ({ ...it }))
-        : [
-            {
-              id: crypto.randomUUID(),
-              receiptId: receipt.id,
-              itemName: "",
-              quantity: 1,
-              unitPrice: receipt.totalAmount || 0,
-              totalPrice: receipt.totalAmount || 0,
-            },
-          ]
-    );
-    setFormError(null);
-  }, [receipt, project.categories]);
+    setMobileTab("form");
+    syncFormFromReceipt(receipt);
+  }, [receipt, syncFormFromReceipt]);
+
+  // Clamp pan offset strictly to zoomed overflow so the receipt can never be dragged off-screen.
+  const clampPanOffset = useCallback(
+    (rawX: number, rawY: number, targetZoom: number) => {
+      if (targetZoom <= 1) return { x: 0, y: 0 };
+      const box = viewerBoxRef.current;
+      const boxW = box?.clientWidth || 340;
+      const boxH = box?.clientHeight || 420;
+      const maxX = Math.round(((targetZoom - 1) * boxW) * 0.5);
+      const maxY = Math.round(((targetZoom - 1) * boxH) * 0.5);
+      return {
+        x: clampValue(rawX, -maxX, maxX),
+        y: clampValue(rawY, -maxY, maxY),
+      };
+    },
+    []
+  );
+
+  const updateZoomLevel = useCallback(
+    (nextZoom: number) => {
+      const clampedZoom = clampValue(Number(nextZoom.toFixed(2)), 1, 3);
+      setZoom(clampedZoom);
+      setPan((prev) => clampPanOffset(prev.x, prev.y, clampedZoom));
+    },
+    [clampPanOffset]
+  );
 
   const itemsSubtotal = useMemo(
     () => items.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0),
@@ -119,7 +162,7 @@ export function SplitScreenVerifierModal({
       if (!receipt) return null;
       const cleanedMerchant = merchantName.trim();
       if (!cleanedMerchant) {
-        setFormError("Nama toko atau warung wajib diisi sebelum menyimpan.");
+        setFormError("Nama toko atau tempat beli wajib diisi sebelum menyimpan.");
         return null;
       }
 
@@ -127,7 +170,7 @@ export function SplitScreenVerifierModal({
         .filter((it) => it.itemName.trim() !== "" || it.totalPrice > 0)
         .map((it) => ({
           ...it,
-          itemName: it.itemName.trim() || " Pembelian barang",
+          itemName: it.itemName.trim() || "Pembelian barang",
         }));
 
       return {
@@ -187,7 +230,27 @@ export function SplitScreenVerifierModal({
     }
   }, [buildUpdatedReceipt, onSaveReceipt]);
 
-  // Trap keyboard focus inside modal, close on Escape, and bind Ctrl+Enter for fast audit workflow.
+  const handleReanalyze = useCallback(async () => {
+    if (!receipt || !onReanalyzeReceipt || reanalyzing) return;
+    setFormError(null);
+    setReanalyzing(true);
+    try {
+      const updated = await onReanalyzeReceipt(receipt);
+      if (updated) {
+        syncFormFromReceipt(updated);
+      }
+    } catch (err) {
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : "Gagal menganalisis ulang foto struk."
+      );
+    } finally {
+      setReanalyzing(false);
+    }
+  }, [onReanalyzeReceipt, reanalyzing, receipt, syncFormFromReceipt]);
+
+  // Trap keyboard focus inside modal, close on Escape, and bind Ctrl+Enter for fast verification.
   useEffect(() => {
     const dialogEl = modalRef.current;
     if (!dialogEl) return;
@@ -275,23 +338,27 @@ export function SplitScreenVerifierModal({
   }
 
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (zoom <= 1) return;
     setIsDragging(true);
     dragOriginRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
     e.currentTarget.setPointerCapture(e.pointerId);
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
-    if (!isDragging) return;
-    setPan({
-      x: e.clientX - dragOriginRef.current.x,
-      y: e.clientY - dragOriginRef.current.y,
-    });
+    if (!isDragging || zoom <= 1) return;
+    const rawX = e.clientX - dragOriginRef.current.x;
+    const rawY = e.clientY - dragOriginRef.current.y;
+    setPan(clampPanOffset(rawX, rawY, zoom));
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
     if (!isDragging) return;
     setIsDragging(false);
-    e.currentTarget.releasePointerCapture(e.pointerId);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Ignore if pointer capture already ended
+    }
   }
 
   const prevReceipt = activeIndex > 0 ? receipts[activeIndex - 1] : null;
@@ -302,6 +369,7 @@ export function SplitScreenVerifierModal({
 
   const lowConfidence =
     receipt.confidenceScore < 0.8 || Boolean(receipt.warningMessage);
+  const isManualBlank = receipt.imageHash.startsWith("manual-");
 
   return (
     <div
@@ -313,45 +381,53 @@ export function SplitScreenVerifierModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="judul-modal-verifikasi"
-        className="w-full h-dvh sm:h-[94dvh] max-w-7xl bg-[var(--bg-surface)] sm:rounded-[8px] border-2 border-[var(--border-control)] shadow-2xl flex flex-col overflow-hidden"
+        className="w-full h-dvh sm:h-[94dvh] max-w-6xl bg-[var(--bg-surface)] sm:rounded-[8px] sm:border-2 border-[var(--border-control)] shadow-2xl flex flex-col overflow-hidden"
       >
-        <div className="px-4 py-3 bg-[var(--bg-subtle)] border-b border-[var(--border-control)] flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span className="stamp-ref">#{receipt.referenceNumber}</span>
-            <div>
-              <h2
-                id="judul-modal-verifikasi"
-                className="font-serif-ledger font-bold text-lg leading-tight text-[var(--ink-primary)]"
-              >
-                Cek Kesesuaian Foto Struk &amp; Angka
-              </h2>
-              <p className="text-xs text-[var(--ink-secondary)]">
-                Nota ke-{activeIndex + 1} dari {receipts.length} · {project.title}
-              </p>
-            </div>
+        <div className="px-3 sm:px-5 py-2.5 bg-[var(--bg-subtle)] border-b border-[var(--border-card)] flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="stamp-ref shrink-0">#{receipt.referenceNumber}</span>
+            <h2
+              id="judul-modal-verifikasi"
+              className="font-serif-ledger font-bold text-base sm:text-lg text-[var(--ink-primary)] truncate"
+            >
+              Cek Data Struk
+            </h2>
+            {receipts.length > 1 && (
+              <span className="text-xs font-mono-tabular text-[var(--ink-secondary)] shrink-0">
+                ({activeIndex + 1}/{receipts.length})
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={!prevReceipt}
-              onClick={() => prevReceipt && onSelectReceipt(prevReceipt.id)}
-              className="btn-secondary !px-3 text-xs"
-            >
-              Sebelumnya
-            </button>
-            <button
-              type="button"
-              disabled={!nextReceipt}
-              onClick={() => nextReceipt && onSelectReceipt(nextReceipt.id)}
-              className="btn-secondary !px-3 text-xs"
-            >
-              Berikutnya
-            </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {receipts.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  disabled={!prevReceipt}
+                  onClick={() => prevReceipt && onSelectReceipt(prevReceipt.id)}
+                  aria-label="Nota sebelumnya"
+                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
+                >
+                  <span aria-hidden="true">&lsaquo;</span>
+                  <span className="hidden md:inline">Sebelumnya</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!nextReceipt}
+                  onClick={() => nextReceipt && onSelectReceipt(nextReceipt.id)}
+                  aria-label="Nota berikutnya"
+                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
+                >
+                  <span className="hidden md:inline">Berikutnya</span>
+                  <span aria-hidden="true">&rsaquo;</span>
+                </button>
+              </>
+            )}
             <button
               type="button"
               onClick={onClose}
-              aria-label="Tutup layar periksa nota"
+              aria-label="Tutup jendela cek struk"
               className="btn-secondary !p-2 min-w-[44px]"
             >
               <CloseXIcon />
@@ -361,68 +437,53 @@ export function SplitScreenVerifierModal({
 
         <div
           role="tablist"
-          aria-label="Mode tampilan seluler"
-          className="lg:hidden flex flex-wrap border-b border-[var(--border-control)] bg-[var(--bg-paper)] px-3 py-2 gap-2"
+          aria-label="Pilih tampilan di layar ponsel"
+          className="lg:hidden grid grid-cols-2 gap-2 border-b border-[var(--border-card)] bg-[var(--bg-paper)] px-3 py-2 shrink-0"
         >
-          {[
-            { id: "both", label: "Atas-Bawah" },
-            { id: "image", label: "Foto Struk" },
-            { id: "form", label: "Form Angka" },
-          ].map((tab) => {
-            const selected = mobilePane === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                onClick={() => setMobilePane(tab.id as "both" | "image" | "form")}
-                className={`flex-1 min-h-[44px] rounded-[6px] text-xs font-semibold border ${
-                  selected
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
-                    : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)]"
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mobileTab === "form"}
+            onClick={() => setMobileTab("form")}
+            className={`min-h-[44px] rounded-[6px] text-xs font-semibold border ${
+              mobileTab === "form"
+                ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)]"
+            }`}
+          >
+            Isi &amp; Cek Angka
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mobileTab === "image"}
+            onClick={() => setMobileTab("image")}
+            className={`min-h-[44px] rounded-[6px] text-xs font-semibold border ${
+              mobileTab === "image"
+                ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)]"
+            }`}
+          >
+            Perbesar Foto Struk
+          </button>
         </div>
 
-        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-[var(--border-control)] overflow-y-auto lg:overflow-hidden">
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:divide-x divide-[var(--border-card)] overflow-hidden">
           <div
             className={`${
-              mobilePane === "form" ? "hidden lg:flex" : "flex"
-            } flex-col min-h-[340px] lg:min-h-0 bg-[var(--bg-paper)]`}
+              mobileTab === "image" ? "flex" : "hidden lg:flex"
+            } lg:col-span-5 flex-col min-h-0 bg-[var(--bg-paper)] h-full`}
           >
-            <div className="px-3 py-2 bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-1.5">
+            <div className="px-3 py-2 bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] flex items-center justify-between gap-1.5 shrink-0">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => setZoom((z) => Math.min(3.5, Number((z + 0.25).toFixed(2))))}
-                  aria-label="Perbesar tampilan foto nota"
-                  className="btn-secondary !px-2.5 text-xs"
-                >
-                  <ZoomInIcon className="w-4 h-4" />
-                  <span>Perbesar</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
-                  aria-label="Perkecil tampilan foto nota"
-                  className="btn-secondary !px-2.5 text-xs"
+                  disabled={zoom <= 1}
+                  onClick={() => updateZoomLevel(zoom - 0.5)}
+                  aria-label="Perkecil foto struk"
+                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
                 >
                   <ZoomOutIcon className="w-4 h-4" />
-                  <span>Perkecil</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRotation((r) => (r + 90) % 360)}
-                  aria-label="Putar foto nota 90 derajat searah jarum jam"
-                  className="btn-secondary !px-2.5 text-xs"
-                >
-                  <Rotate90Icon className="w-4 h-4" />
-                  <span>Putar 90°</span>
                 </button>
                 <button
                   type="button"
@@ -431,59 +492,46 @@ export function SplitScreenVerifierModal({
                     setRotation(0);
                     setPan({ x: 0, y: 0 });
                   }}
-                  className="btn-secondary !px-2.5 text-xs font-mono-tabular"
+                  aria-label="Kembalikan ukuran foto ke 100 persen"
+                  className="btn-secondary !px-2.5 text-xs font-mono-tabular min-w-[58px]"
                 >
-                  Reset ({Math.round(zoom * 100)}%)
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  type="button"
+                  disabled={zoom >= 3}
+                  onClick={() => updateZoomLevel(zoom + 0.5)}
+                  aria-label="Perbesar foto struk"
+                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
+                >
+                  <ZoomInIcon className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Single-pointer pan buttons satisfying WCAG 2.5.7 Dragging Movements */}
-              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Geser posisi foto tanpa seret">
-                <button
-                  type="button"
-                  onClick={() => setPan((p) => ({ ...p, x: p.x + 40 }))}
-                  aria-label="Geser foto ke kanan"
-                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
-                >
-                  ←
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPan((p) => ({ ...p, y: p.y + 40 }))}
-                  aria-label="Geser foto ke bawah"
-                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPan((p) => ({ ...p, y: p.y - 40 }))}
-                  aria-label="Geser foto ke atas"
-                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPan((p) => ({ ...p, x: p.x - 40 }))}
-                  aria-label="Geser foto ke kiri"
-                  className="btn-secondary !px-2.5 min-w-[44px] text-xs"
-                >
-                  →
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setRotation((r) => (r + 90) % 360)}
+                aria-label="Putar foto 90 derajat"
+                className="btn-secondary !px-3 text-xs"
+              >
+                <Rotate90Icon className="w-4 h-4" />
+                <span>Putar 90°</span>
+              </button>
             </div>
 
             <div
+              ref={viewerBoxRef}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
+              onDoubleClick={() => updateZoomLevel(zoom > 1 ? 1 : 2)}
               style={{
-                cursor: isDragging ? "grabbing" : "grab",
-                touchAction: "none",
+                cursor:
+                  zoom <= 1 ? "zoom-in" : isDragging ? "grabbing" : "grab",
+                touchAction: zoom > 1 ? "none" : "manipulation",
               }}
-              className="flex-1 overflow-hidden relative flex items-center justify-center p-4 select-none min-h-[280px]"
+              className="flex-1 min-h-0 overflow-hidden relative flex items-center justify-center p-3 sm:p-4 select-none"
             >
               <img
                 src={receipt.imageUrl}
@@ -495,15 +543,65 @@ export function SplitScreenVerifierModal({
                   transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg)`,
                   transformOrigin: "center center",
                 }}
-                className="max-h-full max-w-full w-auto h-auto object-contain rounded-[4px] border border-[var(--border-control)] bg-white"
+                className="max-h-full max-w-full w-auto h-auto object-contain rounded-[4px] border border-[var(--border-card)] bg-white"
               />
+
+              {/* Single-pointer pan nudge buttons appear only while zoomed in (WCAG 2.5.7) */}
+              {zoom > 1 && (
+                <div
+                  role="group"
+                  aria-label="Geser bagian foto yang diperbesar"
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 p-1 rounded-[6px] bg-[var(--bg-surface)] border border-[var(--border-control)] shadow-md"
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPan((p) => clampPanOffset(p.x + 50, p.y, zoom))
+                    }
+                    aria-label="Lihat sisi kiri foto"
+                    className="btn-secondary !p-1.5 min-w-[44px] text-xs"
+                  >
+                    &larr;
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPan((p) => clampPanOffset(p.x, p.y + 50, zoom))
+                    }
+                    aria-label="Lihat bagian atas foto"
+                    className="btn-secondary !p-1.5 min-w-[44px] text-xs"
+                  >
+                    &uarr;
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPan((p) => clampPanOffset(p.x, p.y - 50, zoom))
+                    }
+                    aria-label="Lihat bagian bawah foto"
+                    className="btn-secondary !p-1.5 min-w-[44px] text-xs"
+                  >
+                    &darr;
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPan((p) => clampPanOffset(p.x - 50, p.y, zoom))
+                    }
+                    aria-label="Lihat sisi kanan foto"
+                    className="btn-secondary !p-1.5 min-w-[44px] text-xs"
+                  >
+                    &rarr;
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
           <div
             className={`${
-              mobilePane === "image" ? "hidden lg:flex" : "flex"
-            } flex-col lg:min-h-0 lg:overflow-y-auto`}
+              mobileTab === "form" ? "flex" : "hidden lg:flex"
+            } lg:col-span-7 flex-col min-h-0 h-full`}
             onFocusCapture={(e) => {
               const target = e.target as HTMLElement | null;
               if (
@@ -516,11 +614,57 @@ export function SplitScreenVerifierModal({
               }
             }}
           >
-            <div className="p-4 sm:p-6 pb-10 space-y-5 flex-1">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3.5 sm:p-5 lg:p-6 space-y-4">
+              {/* Compact mobile preview strip so users see the photo & re-scan button without stealing screen height */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 p-2.5 sm:p-3 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)]">
+                <div className="flex items-center gap-3 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setMobileTab("image")}
+                    aria-label="Buka tampilan foto struk penuh"
+                    className="lg:hidden w-12 h-14 shrink-0 rounded-[4px] border border-[var(--border-control)] overflow-hidden bg-white"
+                  >
+                    <img
+                      src={receipt.imageUrl}
+                      alt={`Pratinjau ${receipt.referenceNumber}`}
+                      width={48}
+                      height={56}
+                      className="w-full h-full object-cover"
+                    />
+                  </button>
+                  <div className="min-w-0 text-xs">
+                    <p className="font-bold text-[var(--ink-primary)]">
+                      {isManualBlank
+                        ? "Catatan tanpa foto struk"
+                        : "Hasil analisis otomatis dari foto"}
+                    </p>
+                    <p className="text-[var(--ink-secondary)]">
+                      {isManualBlank
+                        ? "Isi kolom di bawah sesuai pengeluaran Anda."
+                        : "Belum sesuai foto? Klik Baca Ulang agar dianalisis lagi."}
+                    </p>
+                  </div>
+                </div>
+
+                {!isManualBlank && onReanalyzeReceipt && (
+                  <button
+                    type="button"
+                    disabled={reanalyzing}
+                    onClick={() => void handleReanalyze()}
+                    className="btn-secondary !py-1.5 !px-3 text-xs w-full sm:w-auto"
+                  >
+                    <RefreshBatchIcon className="w-4 h-4 shrink-0" />
+                    <span>
+                      {reanalyzing ? "Menganalisis Foto..." : "Baca Ulang dari Foto"}
+                    </span>
+                  </button>
+                )}
+              </div>
+
               {lowConfidence && (
                 <div
                   role="alert"
-                  className="rounded-[6px] p-3.5 border-2 flex items-start gap-3"
+                  className="rounded-[6px] p-3 border-2 flex items-start gap-2.5"
                   style={{
                     backgroundColor: "var(--amber-bg)",
                     color: "var(--amber-ink)",
@@ -528,11 +672,11 @@ export function SplitScreenVerifierModal({
                   }}
                 >
                   <AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
-                  <div className="text-sm">
+                  <div className="text-xs sm:text-sm">
                     <p className="font-bold">Mohon cek kembali angkanya</p>
                     <p className="mt-0.5">
                       {receipt.warningMessage ??
-                        "Beberapa tulisan di foto struk kurang jelas. Pastikan tanggal dan total belanja sudah sesuai dengan foto."}
+                        "Sebagian tulisan di struk agak samar. Pastikan tanggal dan total belanja sudah sama dengan foto."}
                     </p>
                   </div>
                 </div>
@@ -541,23 +685,23 @@ export function SplitScreenVerifierModal({
               {receipt.isDuplicate && (
                 <div
                   role="alert"
-                  className="rounded-[6px] p-3.5 border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="rounded-[6px] p-3 border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                   style={{
                     backgroundColor: "var(--stamp-tint-bg)",
                     color: "var(--stamp-tint-ink)",
                     borderColor: "var(--stamp-tint-border)",
                   }}
                 >
-                  <div className="flex items-start gap-2.5 text-sm">
+                  <div className="flex items-start gap-2 text-xs sm:text-sm">
                     <AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-bold">Kemungkinan Nota Ganda</p>
+                      <p className="font-bold">Kemungkinan Struk Ganda</p>
                       <p>
-                        Data foto, tanggal, atau total sama dengan{" "}
+                        Mirip dengan{" "}
                         <span className="font-mono-tabular font-bold">
                           #{receipt.duplicateOfRef ?? "nota sebelumnya"}
                         </span>
-                        . Hapus bila terunggah dua kali.
+                        . Hapus bila tidak sengaja masuk dua kali.
                       </p>
                     </div>
                   </div>
@@ -567,7 +711,7 @@ export function SplitScreenVerifierModal({
                     className="btn-secondary shrink-0 text-xs"
                   >
                     <TrashBinIcon className="w-4 h-4" />
-                    <span>Hapus Nota Ini</span>
+                    <span>Hapus Ini</span>
                   </button>
                 </div>
               )}
@@ -575,7 +719,7 @@ export function SplitScreenVerifierModal({
               {formError && (
                 <div
                   role="alert"
-                  className="rounded-[6px] p-3 border-2 text-sm font-semibold"
+                  className="rounded-[6px] p-3 border-2 text-xs sm:text-sm font-semibold"
                   style={{
                     backgroundColor: "var(--stamp-tint-bg)",
                     color: "var(--stamp-tint-ink)",
@@ -586,13 +730,13 @@ export function SplitScreenVerifierModal({
                 </div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="sm:col-span-2">
                   <label
                     htmlFor="edit-merchant-name"
-                    className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
+                    className="block text-xs sm:text-sm font-semibold text-[var(--ink-primary)] mb-1"
                   >
-                    Nama Toko / Warung / Penerima Transfer
+                    Nama Toko / Warung / Penerima
                   </label>
                   <input
                     id="edit-merchant-name"
@@ -603,7 +747,7 @@ export function SplitScreenVerifierModal({
                       setMerchantName(e.target.value);
                       if (formError) setFormError(null);
                     }}
-                    placeholder="Contoh: Toko Fotokopi Berkah"
+                    placeholder="Contoh: Indomaret / RM Sederhana"
                     className="input-ledger"
                   />
                 </div>
@@ -611,7 +755,7 @@ export function SplitScreenVerifierModal({
                 <div>
                   <label
                     htmlFor="edit-tx-date"
-                    className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
+                    className="block text-xs sm:text-sm font-semibold text-[var(--ink-primary)] mb-1"
                   >
                     Tanggal Nota
                   </label>
@@ -627,9 +771,9 @@ export function SplitScreenVerifierModal({
                 <div>
                   <label
                     htmlFor="edit-payment-method"
-                    className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
+                    className="block text-xs sm:text-sm font-semibold text-[var(--ink-primary)] mb-1"
                   >
-                    Metode Pembayaran
+                    Cara Pembayaran
                   </label>
                   <select
                     id="edit-payment-method"
@@ -648,7 +792,7 @@ export function SplitScreenVerifierModal({
                 <div className="sm:col-span-2">
                   <label
                     htmlFor="edit-category"
-                    className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
+                    className="block text-xs sm:text-sm font-semibold text-[var(--ink-primary)] mb-1"
                   >
                     Kategori Pengeluaran
                   </label>
@@ -667,8 +811,8 @@ export function SplitScreenVerifierModal({
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-[var(--border-subtle)]">
-                <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="pt-3 border-t border-[var(--border-subtle)] space-y-3">
+                <div className="flex items-center justify-between gap-2">
                   <h3 className="font-serif-ledger font-bold text-base text-[var(--ink-primary)]">
                     Daftar Barang yang Dibeli
                   </h3>
@@ -677,109 +821,105 @@ export function SplitScreenVerifierModal({
                     onClick={addItemRow}
                     className="btn-secondary !py-1.5 !px-3 text-xs"
                   >
-                    <PlusBoxIcon className="w-4 h-4" />
+                    <PlusBoxIcon className="w-4 h-4 shrink-0" />
                     <span>Tambah Barang</span>
                   </button>
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {items.map((item, idx) => (
                     <div
                       key={item.id}
-                      className="p-3 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end"
+                      className="p-3 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] space-y-2.5"
                     >
-                      <div className="sm:col-span-5">
+                      <div className="flex items-center justify-between gap-2">
                         <label
                           htmlFor={`item-name-${item.id}`}
-                          className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                          className="text-xs font-bold text-[var(--ink-secondary)]"
                         >
-                          Nama Barang #{idx + 1}
+                          Barang #{idx + 1}
                         </label>
-                        <input
-                          id={`item-name-${item.id}`}
-                          type="text"
-                          value={item.itemName}
-                          onChange={(e) =>
-                            updateItemRow(item.id, "itemName", e.target.value)
-                          }
-                          placeholder="Uraian barang"
-                          className="input-ledger !min-h-[44px] text-sm"
-                        />
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono-tabular font-semibold text-[var(--ink-primary)]">
+                            {formatRupiah(item.totalPrice)}
+                          </span>
+                          {items.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeItemRow(item.id)}
+                              aria-label={`Hapus barang ${idx + 1}`}
+                              className="btn-secondary !p-2 min-w-[44px]"
+                            >
+                              <TrashBinIcon className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="sm:col-span-2">
-                        <label
-                          htmlFor={`item-qty-${item.id}`}
-                          className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
-                        >
-                          Jumlah
-                        </label>
-                        <input
-                          id={`item-qty-${item.id}`}
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={item.quantity}
-                          onChange={(e) =>
-                            updateItemRow(item.id, "quantity", e.target.value)
-                          }
-                          className="input-ledger !min-h-[44px] font-mono-tabular text-sm"
-                        />
-                      </div>
+                      <input
+                        id={`item-name-${item.id}`}
+                        type="text"
+                        value={item.itemName}
+                        onChange={(e) =>
+                          updateItemRow(item.id, "itemName", e.target.value)
+                        }
+                        placeholder="Nama barang sesuai struk"
+                        className="input-ledger text-sm"
+                      />
 
-                      <div className="sm:col-span-3">
-                        <label
-                          htmlFor={`item-price-${item.id}`}
-                          className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
-                        >
-                          Harga Satuan (Rp)
-                        </label>
-                        <input
-                          id={`item-price-${item.id}`}
-                          type="text"
-                          inputMode="numeric"
-                          value={item.unitPrice === 0 ? "" : String(item.unitPrice)}
-                          onChange={(e) =>
-                            updateItemRow(item.id, "unitPrice", e.target.value)
-                          }
-                          placeholder="Contoh: 25000"
-                          className="input-ledger !min-h-[44px] font-mono-tabular text-sm"
-                        />
-                      </div>
+                      <div className="grid grid-cols-12 gap-2.5">
+                        <div className="col-span-4">
+                          <label
+                            htmlFor={`item-qty-${item.id}`}
+                            className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                          >
+                            Jumlah
+                          </label>
+                          <input
+                            id={`item-qty-${item.id}`}
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={item.quantity}
+                            onChange={(e) =>
+                              updateItemRow(item.id, "quantity", e.target.value)
+                            }
+                            className="input-ledger font-mono-tabular text-sm"
+                          />
+                        </div>
 
-                      <div className="sm:col-span-2 flex items-center justify-between sm:justify-end gap-2">
-                        <span className="sm:hidden text-xs font-mono-tabular font-semibold text-[var(--ink-secondary)]">
-                          Subtotal: {formatRupiah(item.totalPrice)}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={items.length <= 1}
-                          onClick={() => removeItemRow(item.id)}
-                          aria-label={`Hapus baris barang ${idx + 1}`}
-                          className="btn-secondary !p-2.5 min-w-[44px]"
-                        >
-                          <TrashBinIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="hidden sm:block sm:col-span-12 text-right text-xs font-mono-tabular text-[var(--ink-secondary)]">
-                        Subtotal Baris:{" "}
-                        <strong className="text-[var(--ink-primary)]">
-                          {formatRupiah(item.totalPrice)}
-                        </strong>
+                        <div className="col-span-8">
+                          <label
+                            htmlFor={`item-price-${item.id}`}
+                            className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                          >
+                            Harga Satuan (Rp)
+                          </label>
+                          <input
+                            id={`item-price-${item.id}`}
+                            type="text"
+                            inputMode="numeric"
+                            value={item.unitPrice === 0 ? "" : String(item.unitPrice)}
+                            onChange={(e) =>
+                              updateItemRow(item.id, "unitPrice", e.target.value)
+                            }
+                            placeholder="Contoh: 15000"
+                            className="input-ledger font-mono-tabular text-sm"
+                          />
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[var(--border-subtle)]">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-[var(--border-subtle)]">
                 <div>
                   <label
                     htmlFor="edit-tax"
                     className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
                   >
-                    Pajak / Biaya Layanan (Rp)
+                    Pajak / Biaya Lain (Rp)
                   </label>
                   <input
                     id="edit-tax"
@@ -790,7 +930,7 @@ export function SplitScreenVerifierModal({
                       setTaxAndService(parseIndonesianMoneyInput(e.target.value))
                     }
                     placeholder="0"
-                    className="input-ledger font-mono-tabular"
+                    className="input-ledger font-mono-tabular text-sm"
                   />
                 </div>
 
@@ -810,7 +950,7 @@ export function SplitScreenVerifierModal({
                       setDiscount(parseIndonesianMoneyInput(e.target.value))
                     }
                     placeholder="0"
-                    className="input-ledger font-mono-tabular"
+                    className="input-ledger font-mono-tabular text-sm"
                   />
                 </div>
 
@@ -819,7 +959,7 @@ export function SplitScreenVerifierModal({
                     htmlFor="edit-total-amount"
                     className="block text-xs font-bold text-[var(--ink-primary)] mb-1"
                   >
-                    Total Akhir Dibayar (Rp)
+                    Total Bayar Akhir (Rp)
                   </label>
                   <input
                     id="edit-total-amount"
@@ -830,13 +970,13 @@ export function SplitScreenVerifierModal({
                       setTotalAmount(parseIndonesianMoneyInput(e.target.value))
                     }
                     placeholder="Contoh: 148500"
-                    className="input-ledger font-mono-tabular font-bold"
+                    className="input-ledger font-mono-tabular font-bold text-sm"
                   />
                 </div>
               </div>
 
               <div
-                className="rounded-[6px] p-3.5 border-2"
+                className="rounded-[6px] p-3 border-2"
                 style={
                   discrepancy !== 0
                     ? {
@@ -851,26 +991,26 @@ export function SplitScreenVerifierModal({
                       }
                 }
               >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs sm:text-sm">
                   <div className="space-y-0.5">
-                    <p className="font-bold flex items-center gap-2">
+                    <p className="font-bold flex items-center gap-1.5">
                       {discrepancy !== 0 ? (
                         <>
                           <AlertTriangleIcon className="w-4 h-4 shrink-0" />
                           <span>
-                            Ada Selisih {formatRupiah(Math.abs(discrepancy))} antara Rincian &amp; Total Nota
+                            Selisih {formatRupiah(Math.abs(discrepancy))} antara barang &amp; total
                           </span>
                         </>
                       ) : (
                         <>
                           <StampCheckIcon className="w-4 h-4 shrink-0" />
-                          <span>Hitungan Rincian Cocok dengan Total Akhir Nota</span>
+                          <span>Jumlah barang sudah cocok dengan total bayar</span>
                         </>
                       )}
                     </p>
                     <p className="text-xs font-mono-tabular">
-                      Jumlah Rincian ({formatRupiah(calculatedGrandTotal)}) vs Total Akhir Nota (
-                      {formatRupiah(totalAmount)})
+                      Rincian {formatRupiah(calculatedGrandTotal)} · Total{" "}
+                      {formatRupiah(totalAmount)}
                     </p>
                   </div>
 
@@ -880,7 +1020,7 @@ export function SplitScreenVerifierModal({
                       onClick={() => setTotalAmount(calculatedGrandTotal)}
                       className="btn-secondary text-xs shrink-0"
                     >
-                      Samakan Total ke {formatRupiah(calculatedGrandTotal)}
+                      Samakan ke {formatRupiah(calculatedGrandTotal)}
                     </button>
                   )}
                 </div>
@@ -889,7 +1029,7 @@ export function SplitScreenVerifierModal({
               <div>
                 <label
                   htmlFor="edit-notes"
-                  className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
+                  className="block text-xs sm:text-sm font-semibold text-[var(--ink-primary)] mb-1"
                 >
                   Catatan Tambahan (Opsional)
                 </label>
@@ -898,44 +1038,44 @@ export function SplitScreenVerifierModal({
                   rows={2}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Contoh: Konsumsi rapat panitia hari pertama"
-                  className="input-ledger !min-h-[68px]"
+                  placeholder="Contoh: Konsumsi rapat panitia"
+                  className="input-ledger !min-h-[64px] text-sm"
                 />
               </div>
             </div>
 
-            <div className="sticky bottom-0 z-10 px-4 py-3 bg-[var(--bg-subtle)] border-t border-[var(--border-card)] flex flex-wrap items-center justify-between gap-2.5">
+            <div className="px-3 sm:px-5 py-2.5 bg-[var(--bg-subtle)] border-t border-[var(--border-card)] flex items-center gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => onDeleteReceipt(receipt.id)}
-                className="btn-secondary text-xs"
+                aria-label="Hapus nota ini"
+                className="btn-secondary !px-3 min-w-[44px] text-xs"
               >
-                <TrashBinIcon className="w-4 h-4" />
-                <span>Hapus</span>
+                <TrashBinIcon className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Hapus</span>
               </button>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={handleSaveDraft}
-                  className="btn-secondary text-xs sm:text-sm"
-                >
-                  Simpan Dulu
-                </button>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void handleConfirmVerified(true)}
-                  className="btn-stamp text-xs sm:text-sm"
-                >
-                  <StampCheckIcon className="w-4 h-4 shrink-0" />
-                  <span>
-                    Sudah Pas &amp; Lanjut{" "}
-                    <span className="hidden sm:inline">(Ctrl+Enter)</span>
-                  </span>
-                </button>
-              </div>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void handleSaveDraft()}
+                className="btn-secondary !px-3 text-xs sm:text-sm shrink-0"
+              >
+                Simpan Dulu
+              </button>
+
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void handleConfirmVerified(true)}
+                className="btn-stamp flex-1 text-xs sm:text-sm"
+              >
+                <StampCheckIcon className="w-4 h-4 shrink-0" />
+                <span>
+                  Sudah Pas
+                  <span className="hidden sm:inline"> &amp; Lanjut (Ctrl+Enter)</span>
+                </span>
+              </button>
             </div>
           </div>
         </div>

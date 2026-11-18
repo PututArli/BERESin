@@ -46,6 +46,7 @@ import {
   DownloadTrayIcon,
   PdfDocumentIcon,
   PlusBoxIcon,
+  RefreshBatchIcon,
   SpreadsheetIcon,
   StampCheckIcon,
   TrashBinIcon,
@@ -165,6 +166,67 @@ export default function HomePage() {
     return liveProject;
   }
 
+  const requestOcrExtraction = useCallback(
+    async (
+      imageDataUrl: string,
+      mimeType: string,
+      fileName: string,
+      categories: string[],
+      mode: ExtractionMode
+    ): Promise<{
+      extracted: OcrExtractedPayload | null;
+      aiUsed: boolean;
+      errorDetail: string | null;
+    }> => {
+      try {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (settings.geminiApiKey.trim()) {
+          headers["x-gemini-api-key"] = settings.geminiApiKey.trim();
+        }
+
+        const resp = await fetch("/api/ocr", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            imageBase64: imageDataUrl,
+            mimeType: mimeType || "image/jpeg",
+            fileName,
+            categories,
+            extractionMode: mode,
+          }),
+        });
+
+        const json = await resp.json().catch(() => ({}));
+        if (resp.ok && json?.data) {
+          return {
+            extracted: json.data as OcrExtractedPayload,
+            aiUsed: Boolean(json.aiUsed),
+            errorDetail: null,
+          };
+        }
+
+        return {
+          extracted: null,
+          aiUsed: false,
+          errorDetail:
+            typeof json?.error === "string"
+              ? json.error
+              : "Analisis foto belum berhasil dijalankan.",
+        };
+      } catch {
+        return {
+          extracted: null,
+          aiUsed: false,
+          errorDetail:
+            "Tidak dapat terhubung ke pembaca struk. Periksa koneksi internet Anda.",
+        };
+      }
+    },
+    [settings.geminiApiKey]
+  );
+
   async function processFiles(fileList: FileList | File[] | null) {
     if (!fileList || !project) return;
     const rawCandidates = Array.from(fileList);
@@ -189,11 +251,11 @@ export default function HomePage() {
     }
 
     userMutatedRef.current = true;
-    setErrorText(
+    let noticeMessage =
       skippedCount > 0
         ? `${skippedCount} file dilewati karena bukan foto JPG, PNG, atau WebP (maksimal 25 MB).`
-        : ""
-    );
+        : "";
+    setErrorText(noticeMessage);
     setUploading(true);
     let firstAddedId: string | null = null;
     const createdList: Receipt[] = [];
@@ -202,14 +264,16 @@ export default function HomePage() {
       for (let i = 0; i < verifiedFiles.length; i += 1) {
         const file = verifiedFiles[i];
         setUploadStatusText(
-          `Membaca foto struk ${i + 1} dari ${verifiedFiles.length} (${file.name})...`
+          `Menganalisis foto struk ${i + 1} dari ${verifiedFiles.length} (${file.name})...`
         );
 
         let compressed: Blob = file;
         try {
+          // Keep 2048px resolution so tall supermarket/thermal receipts stay sharp for OCR.
           compressed = await imageCompression(file, {
-            maxSizeMB: 1,
-            maxWidthOrHeight: 1200,
+            maxSizeMB: 1.8,
+            maxWidthOrHeight: 2048,
+            initialQuality: 0.88,
             fileType: "image/jpeg",
             useWebWorker: false,
           });
@@ -226,36 +290,16 @@ export default function HomePage() {
         const receiptId = crypto.randomUUID();
         if (!firstAddedId) firstAddedId = receiptId;
 
-        let extracted: OcrExtractedPayload | null = null;
-        let aiUsed = false;
+        const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
+          dataUrl,
+          compressed.type || "image/jpeg",
+          file.name,
+          project.categories,
+          extractionMode
+        );
 
-        try {
-          const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-          };
-          if (settings.geminiApiKey.trim()) {
-            headers["x-gemini-api-key"] = settings.geminiApiKey.trim();
-          }
-
-          const resp = await fetch("/api/ocr", {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              imageBase64: dataUrl,
-              mimeType: compressed.type || "image/jpeg",
-              fileName: file.name,
-              categories: project.categories,
-              extractionMode,
-            }),
-          });
-
-          if (resp.ok) {
-            const json = await resp.json();
-            extracted = json.data as OcrExtractedPayload;
-            aiUsed = Boolean(json.aiUsed);
-          }
-        } catch {
-          // Keep compressed photo for manual entry when offline
+        if (errorDetail) {
+          noticeMessage = errorDetail;
         }
 
         const confidence = extracted?.confidence_score ?? 0.5;
@@ -269,10 +313,7 @@ export default function HomePage() {
           imageUrl: dataUrl,
           imageHash,
           extractionMode,
-          merchantName:
-            extracted?.merchant_name ||
-            file.name.replace(/\.[^.]+$/, "").slice(0, 80) ||
-            "Nota Baru",
+          merchantName: extracted?.merchant_name || "Struk Belum Terbaca",
           transactionDate: extracted?.transaction_date ?? todayIsoDate(),
           category:
             extracted?.category && project.categories.includes(extracted.category)
@@ -284,7 +325,10 @@ export default function HomePage() {
           totalAmount: extracted?.total_amount ?? 0,
           paymentMethod: extracted?.payment_method ?? "Tunai",
           confidenceScore: confidence,
-          warningMessage: extracted?.warning_message ?? null,
+          warningMessage:
+            extracted?.warning_message ??
+            errorDetail ??
+            null,
           isDuplicate: false,
           duplicateOfRef: null,
           status: autoVerified ? "verified" : "needs_review",
@@ -304,12 +348,16 @@ export default function HomePage() {
         createdList.push(saved);
       }
 
+      if (noticeMessage) {
+        setErrorText(noticeMessage);
+      }
+
       setReceipts((prev) =>
         [...prev, ...createdList].sort((a, b) =>
           a.referenceNumber.localeCompare(b.referenceNumber)
         )
       );
-      announcePolite(`${createdList.length} foto struk selesai ditambahkan.`);
+      announcePolite(`${createdList.length} foto struk selesai dianalisis.`);
 
       if (createdList.length === 1 && createdList[0].totalAmount === 0 && firstAddedId) {
         setActiveReceiptId(firstAddedId);
@@ -322,6 +370,65 @@ export default function HomePage() {
       }
     }
   }
+
+  const handleReanalyzeReceipt = useCallback(
+    async (targetReceipt: Receipt): Promise<Receipt | null> => {
+      if (!project) return null;
+      const mimeMatch = targetReceipt.imageUrl.match(/^data:(image\/[a-z+]+);base64,/i);
+      const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+
+      const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
+        targetReceipt.imageUrl,
+        mime,
+        targetReceipt.referenceNumber,
+        project.categories,
+        targetReceipt.extractionMode || extractionMode
+      );
+
+      if (!extracted) {
+        throw new Error(errorDetail ?? "Analisis ulang foto belum berhasil.");
+      }
+
+      const confidence = extracted.confidence_score ?? 0.85;
+      const autoVerified =
+        aiUsed && confidence >= 0.85 && (extracted.total_amount ?? 0) > 0;
+
+      const refreshed: Receipt = {
+        ...targetReceipt,
+        merchantName: extracted.merchant_name || targetReceipt.merchantName,
+        transactionDate: extracted.transaction_date ?? targetReceipt.transactionDate,
+        category:
+          extracted.category && project.categories.includes(extracted.category)
+            ? extracted.category
+            : targetReceipt.category,
+        subtotal: extracted.subtotal ?? extracted.total_amount ?? 0,
+        taxAndService: extracted.tax_and_service ?? 0,
+        discount: extracted.discount ?? 0,
+        totalAmount: extracted.total_amount ?? 0,
+        paymentMethod: extracted.payment_method ?? "Tunai",
+        confidenceScore: confidence,
+        warningMessage: extracted.warning_message ?? null,
+        status: autoVerified ? "verified" : "needs_review",
+        items: (extracted.items ?? []).map((it) => ({
+          id: crypto.randomUUID(),
+          receiptId: targetReceipt.id,
+          itemName: it.item_name,
+          quantity: it.quantity,
+          unitPrice: it.unit_price,
+          totalPrice: it.total_price,
+        })),
+      };
+
+      userMutatedRef.current = true;
+      setReceipts((prev) =>
+        prev.map((r) => (r.id === refreshed.id ? refreshed : r))
+      );
+      void saveReceipt(refreshed);
+      announcePolite(`Nota ${refreshed.referenceNumber} berhasil dianalisis ulang.`);
+      return refreshed;
+    },
+    [announcePolite, extractionMode, project, requestOcrExtraction]
+  );
 
   async function handleAddManualReceipt() {
     if (!project) return;
@@ -727,41 +834,41 @@ export default function HomePage() {
               </button>
             </div>
 
-            <div className="pt-2.5 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-[var(--ink-secondary)]">
+            <div className="pt-2.5 border-t border-[var(--border-subtle)] space-y-2 sm:space-y-0 sm:flex sm:flex-wrap sm:items-center sm:justify-between gap-2">
+              <span className="block text-xs font-semibold text-[var(--ink-secondary)]">
                 Ekspor ke format file lainnya:
               </span>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="grid grid-cols-3 sm:flex sm:flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={handleDownloadCsv}
-                  className="btn-secondary !py-1.5 !px-3 text-xs"
+                  className="btn-secondary !py-1.5 !px-2 sm:!px-3 text-xs"
                 >
-                  <DownloadTrayIcon className="w-3.5 h-3.5 shrink-0" />
+                  <DownloadTrayIcon className="hidden sm:inline-block w-3.5 h-3.5 shrink-0" />
                   <span>CSV (.csv)</span>
                 </button>
                 <button
                   type="button"
                   onClick={handleDownloadHtml}
-                  className="btn-secondary !py-1.5 !px-3 text-xs"
+                  className="btn-secondary !py-1.5 !px-2 sm:!px-3 text-xs"
                 >
-                  <DownloadTrayIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span>Halaman Web (.html)</span>
+                  <DownloadTrayIcon className="hidden sm:inline-block w-3.5 h-3.5 shrink-0" />
+                  <span>Web (.html)</span>
                 </button>
                 <button
                   type="button"
                   onClick={handleDownloadTxt}
-                  className="btn-secondary !py-1.5 !px-3 text-xs"
+                  className="btn-secondary !py-1.5 !px-2 sm:!px-3 text-xs"
                 >
-                  <DownloadTrayIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span>Teks Ringkas (.txt)</span>
+                  <DownloadTrayIcon className="hidden sm:inline-block w-3.5 h-3.5 shrink-0" />
+                  <span>Teks (.txt)</span>
                 </button>
               </div>
             </div>
 
             <details className="pt-2 border-t border-[var(--border-subtle)] text-sm">
-              <summary className="font-semibold text-[var(--ink-primary)] min-h-[44px] inline-flex items-center">
-                Isi dana awal &amp; nama penanda tangan laporan (opsional)
+              <summary className="font-semibold text-[var(--ink-primary)] min-h-[44px] py-2 flex items-center justify-between gap-2">
+                <span>Isi dana awal &amp; nama penanda tangan laporan (opsional)</span>
               </summary>
               <div className="pt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
@@ -823,8 +930,8 @@ export default function HomePage() {
             </details>
 
             <details className="pt-2 border-t border-[var(--border-subtle)] text-sm">
-              <summary className="font-semibold text-[var(--ink-secondary)] min-h-[44px] inline-flex items-center">
-                Lihat kalimat laporan LPJ yang dibuat otomatis dari data Anda
+              <summary className="font-semibold text-[var(--ink-secondary)] min-h-[44px] py-2 flex items-center justify-between gap-2">
+                <span>Lihat kalimat laporan LPJ yang dibuat otomatis dari data Anda</span>
               </summary>
               <div className="mt-2 p-3.5 sm:p-4 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] space-y-2.5 text-xs sm:text-sm text-[var(--ink-primary)] leading-relaxed">
                 <p>{narrative.openingParagraph}</p>
@@ -973,6 +1080,7 @@ export default function HomePage() {
           onSelectReceipt={(id) => setActiveReceiptId(id)}
           onSaveReceipt={handleSaveVerified}
           onDeleteReceipt={async (id) => handleDeleteOne(id)}
+          onReanalyzeReceipt={handleReanalyzeReceipt}
         />
       )}
     </div>

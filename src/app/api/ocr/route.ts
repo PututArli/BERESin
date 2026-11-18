@@ -16,7 +16,6 @@ import {
   verifySameOrigin,
 } from "@/lib/security";
 import type { ExtractionMode, OcrExtractedPayload, PaymentMethod } from "@/types/beresin";
-import { todayIsoDate } from "@/lib/format";
 
 interface OcrRequestBody {
   imageBase64?: string;
@@ -26,14 +25,12 @@ interface OcrRequestBody {
   extractionMode?: ExtractionMode;
 }
 
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+}
+
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
-const ALLOWED_PAYMENT = new Set<PaymentMethod>([
-  "Tunai",
-  "QRIS",
-  "Transfer",
-  "Kartu",
-  "Lainnya",
-]);
 
 function stripDataUrlPrefix(input: string): string {
   const commaIdx = input.indexOf(",");
@@ -44,85 +41,297 @@ function cleanEnvSecret(raw: string | undefined): string {
   return (raw ?? "").replace(/^['"]+|['"]+$/g, "").trim();
 }
 
-function inferMerchantFromFilename(fileName: string): string {
-  const safeName = sanitizePlainText(fileName, 120);
-  const withoutExt = safeName.replace(/\.[^.]+$/, "");
-  const cleaned = withoutExt
-    .replace(/[_-]+/g, " ")
-    .replace(/\b(whatsapp|image|img|dsc|foto|nota|struk|\d{6,})\b/gi, "")
-    .replace(/\s+/g, " ")
+function normalizePaymentMethod(raw: unknown): PaymentMethod {
+  if (typeof raw !== "string") return "Tunai";
+  const v = raw.trim().toLowerCase();
+  if (
+    v.includes("qris") ||
+    v.includes("gopay") ||
+    v.includes("dana") ||
+    v.includes("ovo") ||
+    v.includes("shopeepay") ||
+    v.includes("linkaja") ||
+    v === "qr"
+  ) {
+    return "QRIS";
+  }
+  if (
+    v.includes("transfer") ||
+    v.includes("tf") ||
+    v.includes("bca") ||
+    v.includes("mandiri") ||
+    v.includes("livin") ||
+    v.includes("bri") ||
+    v.includes("bni") ||
+    v.includes("seabank") ||
+    v.includes("jago") ||
+    v.includes("bsi") ||
+    v.includes("va") ||
+    v.includes("virtual")
+  ) {
+    return "Transfer";
+  }
+  if (
+    v.includes("kartu") ||
+    v.includes("debit") ||
+    v.includes("kredit") ||
+    v.includes("credit") ||
+    v.includes("edc") ||
+    v.includes("flazz") ||
+    v.includes("e-money") ||
+    v.includes("brizzi") ||
+    v.includes("visa") ||
+    v.includes("master")
+  ) {
+    return "Kartu";
+  }
+  if (v.includes("lain")) return "Lainnya";
+  return "Tunai";
+}
+
+function parseFlexibleIndonesianDate(
+  raw: unknown,
+  currentYear: number
+): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const direct = sanitizeSafeDate(trimmed);
+  if (direct) return direct;
+
+  // Convert DD/MM/YYYY, DD-MM-YYYY, DD.MM.YY into ISO YYYY-MM-DD.
+  const dmyMatch = trimmed.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (dmyMatch) {
+    const day = Number(dmyMatch[1]);
+    const month = Number(dmyMatch[2]);
+    let year = Number(dmyMatch[3]);
+    if (year < 100) year += 2000;
+    if (year < 1990 || year > 2100) year = currentYear;
+    const candidate = `${String(year).padStart(4, "0")}-${String(month).padStart(
+      2,
+      "0"
+    )}-${String(day).padStart(2, "0")}`;
+    return sanitizeSafeDate(candidate);
+  }
+
+  return null;
+}
+
+function parseJsonObjectLenient(rawText: string): OcrExtractedPayload {
+  const cleaned = rawText
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
     .trim();
-  return cleaned.length >= 3 ? cleaned.slice(0, 80) : "Nota Baru (Klik Cek untuk Isi)";
+
+  try {
+    return JSON.parse(cleaned) as OcrExtractedPayload;
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as OcrExtractedPayload;
+    }
+    throw new Error("Respons bukan objek JSON yang valid.");
+  }
+}
+
+// Skips Gemini 2.5 internal reasoning parts (`thought: true`) so JSON.parse receives the structured answer.
+function extractJsonTextFromGemini(geminiJson: unknown): string | null {
+  const root = geminiJson as {
+    candidates?: Array<{ content?: { parts?: GeminiPart[] } }>;
+  };
+  const parts = root?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts) || parts.length === 0) return null;
+
+  const nonThoughtTexts = parts
+    .filter((p) => !p?.thought && typeof p?.text === "string" && p.text.trim() !== "")
+    .map((p) => p.text!.trim());
+
+  if (nonThoughtTexts.length > 0) {
+    return nonThoughtTexts[nonThoughtTexts.length - 1];
+  }
+
+  // Fallback if an older endpoint omits `thought` metadata and embeds JSON in the last part.
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const t = parts[i]?.text?.trim();
+    if (t && t.includes("{")) return t;
+  }
+  return null;
 }
 
 function normalizeOcrOutput(
   raw: OcrExtractedPayload,
-  fallbackCategory: string
+  allowedCategories: string[],
+  currentYear: number
 ): OcrExtractedPayload {
-  const payment =
-    raw.payment_method && ALLOWED_PAYMENT.has(raw.payment_method)
-      ? raw.payment_method
-      : "Tunai";
+  const fallbackCategory = allowedCategories[0] ?? "Lain-lain";
+  const matchedCat =
+    allowedCategories.find(
+      (c) => c.toLowerCase() === String(raw.category ?? "").trim().toLowerCase()
+    ) ?? fallbackCategory;
+
+  const cleanedItems = (Array.isArray(raw.items) ? raw.items : [])
+    .slice(0, 150)
+    .map((it) => {
+      const name = sanitizePlainText(it?.item_name, 160);
+      const qty = sanitizeQuantity(it?.quantity ?? 1) || 1;
+      let unit = sanitizeMoneyAmount(it?.unit_price);
+      let total = sanitizeMoneyAmount(it?.total_price);
+
+      if (total === 0 && unit > 0) {
+        total = Math.round(unit * qty);
+      } else if (unit === 0 && total > 0) {
+        unit = Math.round(total / qty);
+      }
+
+      return {
+        item_name: name || "Pembelian barang",
+        quantity: qty,
+        unit_price: unit,
+        total_price: total,
+      };
+    })
+    .filter((it) => it.item_name !== "" || it.total_price > 0);
+
+  const itemsSum = cleanedItems.reduce((sum, it) => sum + it.total_price, 0);
+  const tax = sanitizeMoneyAmount(raw.tax_and_service);
+  const discount = sanitizeMoneyAmount(raw.discount);
+  const subtotal = sanitizeMoneyAmount(raw.subtotal) || itemsSum;
+  let totalAmount = sanitizeMoneyAmount(raw.total_amount);
+
+  if (totalAmount === 0 && itemsSum > 0) {
+    totalAmount = Math.max(0, itemsSum + tax - discount);
+  }
+
+  if (cleanedItems.length === 0 && totalAmount > 0) {
+    cleanedItems.push({
+      item_name: sanitizePlainText(raw.merchant_name, 120) || "Total belanja struk",
+      quantity: 1,
+      unit_price: totalAmount,
+      total_price: totalAmount,
+    });
+  }
 
   return {
-    merchant_name: sanitizePlainText(raw.merchant_name, 160) || "Nota Belanja",
-    transaction_date: sanitizeSafeDate(raw.transaction_date),
-    category: sanitizePlainText(raw.category, 50) || fallbackCategory,
-    payment_method: payment,
-    subtotal: sanitizeMoneyAmount(raw.subtotal),
-    tax_and_service: sanitizeMoneyAmount(raw.tax_and_service),
-    discount: sanitizeMoneyAmount(raw.discount),
-    total_amount: sanitizeMoneyAmount(raw.total_amount),
-    confidence_score: Math.min(1, Math.max(0, Number(raw.confidence_score) || 0.7)),
+    merchant_name:
+      sanitizePlainText(raw.merchant_name, 160) || "Toko / Penerima",
+    transaction_date: parseFlexibleIndonesianDate(raw.transaction_date, currentYear),
+    category: matchedCat,
+    payment_method: normalizePaymentMethod(raw.payment_method),
+    subtotal,
+    tax_and_service: tax,
+    discount,
+    total_amount: totalAmount,
+    confidence_score: Math.min(
+      1,
+      Math.max(0, Number(raw.confidence_score) || 0.85)
+    ),
     warning_message: raw.warning_message
       ? sanitizePlainText(raw.warning_message, 300)
       : null,
-    items: (Array.isArray(raw.items) ? raw.items : []).slice(0, 150).map((it) => ({
-      item_name: sanitizePlainText(it?.item_name, 160) || "Barang",
-      quantity: sanitizeQuantity(it?.quantity ?? 1),
-      unit_price: sanitizeMoneyAmount(it?.unit_price),
-      total_price: sanitizeMoneyAmount(it?.total_price),
-    })),
+    items: cleanedItems,
   };
 }
 
-// Routes AQ.* keys to Vertex AI Express Mode and AIza* keys to Gemini Developer API.
-async function callGeminiVisionEndpoint(
+// Supports both Vertex AI Express Mode (`AQ.*`) and Gemini Developer API (`AIza*`) with automatic model/schema fallback.
+async function callGeminiVisionWithFallback(
   apiKey: string,
-  requestPayload: unknown
-): Promise<Response> {
-  const isVertexExpressKey = apiKey.startsWith("AQ.");
-  const primaryUrl = isVertexExpressKey
-    ? "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent"
-    : "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+  promptText: string,
+  mimeType: string,
+  base64Clean: string
+): Promise<{ ok: true; rawJsonText: string } | { ok: false; status: number; detail: string }> {
+  const isVertexExpress = apiKey.startsWith("AQ.");
+  const encodedKey = encodeURIComponent(apiKey);
 
-  const fallbackUrl = isVertexExpressKey
-    ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    : "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent";
+  const endpoints = isVertexExpress
+    ? [
+        `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
+        `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=${encodedKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
+      ]
+    : [
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodedKey}`,
+        `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
+      ];
 
-  const serialized = JSON.stringify(requestPayload);
+  const userContents = [
+    {
+      role: "user",
+      parts: [
+        {
+          inlineData: {
+            mimeType,
+            data: base64Clean,
+          },
+        },
+        {
+          text: promptText,
+        },
+      ],
+    },
+  ];
+
+  const payloadWithSchema = JSON.stringify({
+    contents: userContents,
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: "application/json",
+      responseSchema: GEMINI_RESPONSE_SCHEMA,
+    },
+  });
+
+  const payloadPlainJson = JSON.stringify({
+    contents: userContents,
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: "application/json",
+    },
+  });
+
   const headers = {
     "Content-Type": "application/json",
     "x-goog-api-key": apiKey,
   };
 
-  const primaryResp = await fetch(primaryUrl, {
-    method: "POST",
-    headers,
-    body: serialized,
-  });
+  let lastStatus = 502;
+  let lastDetail = "Layanan pembaca struk belum merespons.";
 
-  if (primaryResp.ok) return primaryResp;
-
-  if (primaryResp.status === 400 || primaryResp.status === 401 || primaryResp.status === 403 || primaryResp.status === 404) {
-    return fetch(fallbackUrl, {
+  for (const url of endpoints) {
+    let resp = await fetch(url, {
       method: "POST",
       headers,
-      body: serialized,
+      body: payloadWithSchema,
     });
+
+    if (resp.status === 400) {
+      resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: payloadPlainJson,
+      });
+    }
+
+    if (resp.ok) {
+      const json = await resp.json();
+      const extractedText = extractJsonTextFromGemini(json);
+      if (extractedText) {
+        return { ok: true, rawJsonText: extractedText };
+      }
+      lastDetail = "Jawaban pembaca foto kosong.";
+      continue;
+    }
+
+    lastStatus = resp.status;
+    if (resp.status === 401 || resp.status === 403) {
+      lastDetail = "Kunci API Gemini ditolak atau belum diaktifkan.";
+    } else if (resp.status === 429) {
+      lastDetail = "Antrean pembaca struk sedang penuh, coba beberapa detik lagi.";
+    }
   }
 
-  return primaryResp;
+  return { ok: false, status: lastStatus, detail: lastDetail };
 }
 
 export async function POST(request: Request) {
@@ -131,14 +340,14 @@ export async function POST(request: Request) {
   }
 
   const ip = getClientIp(request);
-  if (!checkRateLimit(`ocr-post:${ip}`, 30, 60_000)) {
+  if (!checkRateLimit(`ocr-post:${ip}`, 45, 60_000)) {
     return NextResponse.json(
-      { error: "Batas kecepatan pemindaian tercapai. Tunggu sebentar lalu coba lagi." },
+      { error: "Terlalu banyak pemindaian beruntun. Tunggu sebentar lalu coba lagi." },
       { status: 429 }
     );
   }
 
-  const parsedReq = await readBoundedJson<OcrRequestBody>(request, 3_600_000);
+  const parsedReq = await readBoundedJson<OcrRequestBody>(request, 4_200_000);
   if (!parsedReq.ok) {
     return NextResponse.json(
       { error: parsedReq.error },
@@ -149,14 +358,17 @@ export async function POST(request: Request) {
   try {
     const body = parsedReq.data;
     const rawImage = body.imageBase64 ?? "";
-    if (!isValidSafeImageDataUrl(rawImage)) {
+    if (!isValidSafeImageDataUrl(rawImage, 3_900_000)) {
       return NextResponse.json(
-        { error: "Data gambar nota tidak valid atau format tidak didukung." },
+        { error: "Data foto struk tidak valid atau ukurannya melebihi batas." },
         { status: 400 }
       );
     }
 
-    const requestedMime = sanitizePlainText(body.mimeType ?? "image/jpeg", 32).toLowerCase();
+    const requestedMime = sanitizePlainText(
+      body.mimeType ?? "image/jpeg",
+      32
+    ).toLowerCase();
     const mimeType = ALLOWED_MIME.has(requestedMime) ? requestedMime : "image/jpeg";
 
     const categories =
@@ -178,7 +390,7 @@ export async function POST(request: Request) {
     const openaiKey = cleanEnvSecret(process.env.OPENAI_API_KEY);
 
     const currentYear = new Date().getFullYear();
-    const systemPrompt = buildIndonesianReceiptSystemPrompt(
+    const fullPrompt = buildIndonesianReceiptSystemPrompt(
       categories,
       extractionMode,
       currentYear
@@ -186,61 +398,27 @@ export async function POST(request: Request) {
     const base64Clean = stripDataUrlPrefix(rawImage);
 
     if (geminiKey) {
-      const geminiPayload = {
-        systemInstruction: {
-          parts: [{ text: systemPrompt }],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: "Ekstrak seluruh informasi nota ini sesuai skema JSON yang diminta.",
-              },
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Clean,
-                },
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-          responseSchema: GEMINI_RESPONSE_SCHEMA,
-        },
-      };
-
-      const geminiResp = await callGeminiVisionEndpoint(geminiKey, geminiPayload);
-
-      if (!geminiResp.ok) {
-        return NextResponse.json(
-          { error: "Layanan pembaca AI sedang sibuk atau kunci API tidak sesuai." },
-          { status: 502 }
-        );
-      }
-
-      const geminiJson = await geminiResp.json();
-      const rawText: string | undefined =
-        geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!rawText) {
-        return NextResponse.json(
-          { error: "Respons AI Vision kosong sehingga tidak dapat dibaca." },
-          { status: 502 }
-        );
-      }
-
-      const parsed = normalizeOcrOutput(
-        JSON.parse(rawText) as OcrExtractedPayload,
-        categories[0] ?? "Lain-lain"
+      const result = await callGeminiVisionWithFallback(
+        geminiKey,
+        fullPrompt,
+        mimeType,
+        base64Clean
       );
+
+      if (!result.ok) {
+        return NextResponse.json(
+          { error: result.detail, aiUsed: false },
+          { status: 502 }
+        );
+      }
+
+      const parsedRaw = parseJsonObjectLenient(result.rawJsonText);
+      const normalized = normalizeOcrOutput(parsedRaw, categories, currentYear);
+
       return NextResponse.json({
         aiUsed: true,
-        provider: "gemini-2.5-flash",
-        data: parsed,
+        provider: "gemini",
+        data: normalized,
       });
     }
 
@@ -255,14 +433,10 @@ export async function POST(request: Request) {
           model: "gpt-4o-mini",
           temperature: 0.1,
           messages: [
-            { role: "system", content: systemPrompt },
+            { role: "system", content: fullPrompt },
             {
               role: "user",
               content: [
-                {
-                  type: "text",
-                  text: "Ekstrak seluruh informasi nota ini sesuai skema JSON yang diminta.",
-                },
                 {
                   type: "image_url",
                   image_url: {
@@ -285,7 +459,7 @@ export async function POST(request: Request) {
 
       if (!openaiResp.ok) {
         return NextResponse.json(
-          { error: "Layanan pembaca AI sedang tidak dapat dihubungi." },
+          { error: "Layanan pembaca otomatis sedang tidak dapat dihubungi." },
           { status: 502 }
         );
       }
@@ -296,53 +470,32 @@ export async function POST(request: Request) {
 
       if (!content) {
         return NextResponse.json(
-          { error: "Respons pembaca AI kosong." },
+          { error: "Jawaban pembaca foto kosong." },
           { status: 502 }
         );
       }
 
-      const parsed = normalizeOcrOutput(
-        JSON.parse(content) as OcrExtractedPayload,
-        categories[0] ?? "Lain-lain"
-      );
+      const parsedRaw = parseJsonObjectLenient(content);
+      const normalized = normalizeOcrOutput(parsedRaw, categories, currentYear);
       return NextResponse.json({
         aiUsed: true,
         provider: "gpt-4o-mini",
-        data: parsed,
+        data: normalized,
       });
     }
 
-    // Without an API key, store the compressed image so the user can fill or export immediately.
-    const fallbackPayload: OcrExtractedPayload = {
-      merchant_name: inferMerchantFromFilename(body.fileName ?? ""),
-      transaction_date: todayIsoDate(),
-      category: categories[0] ?? "Lain-lain",
-      payment_method: "Tunai",
-      subtotal: 0,
-      tax_and_service: 0,
-      discount: 0,
-      total_amount: 0,
-      confidence_score: 0.5,
-      warning_message:
-        "Pembaca otomatis belum aktif di server. Klik Cek / Edit untuk mengisi nominal sesuai foto struk.",
-      items: [
-        {
-          item_name: "Belanja sesuai foto struk",
-          quantity: 1,
-          unit_price: 0,
-          total_price: 0,
-        },
-      ],
-    };
-
-    return NextResponse.json({
-      aiUsed: false,
-      provider: "manual-local",
-      data: fallbackPayload,
-    });
+    return NextResponse.json(
+      {
+        aiUsed: false,
+        missingKey: true,
+        error:
+          "GEMINI_API_KEY belum terpasang di Environment Variables server (Vercel). Pasang GEMINI_API_KEY di pengaturan proyek lalu Redeploy agar foto struk langsung dianalisis otomatis.",
+      },
+      { status: 503 }
+    );
   } catch {
     return NextResponse.json(
-      { error: "Gagal memproses gambar nota." },
+      { error: "Gagal membaca isi foto struk. Coba tekan Baca Ulang Struk." },
       { status: 500 }
     );
   }

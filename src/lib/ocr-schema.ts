@@ -5,40 +5,63 @@ export function buildIndonesianReceiptSystemPrompt(
   extractionMode: ExtractionMode,
   currentYear: number
 ): string {
-  const categoryList = categories.length > 0 ? categories.join(", ") : "Konsumsi, Perlengkapan, Transportasi, Acara, Lain-lain";
+  const categoryList =
+    categories.length > 0
+      ? categories.join(", ")
+      : "Konsumsi, Perlengkapan, Transportasi, Acara, Lain-lain";
+
   const detailInstruction =
     extractionMode === "summary"
-      ? "Mode Ekstraksi: REKAP TOTAL SAJA (Cepat). Kembalikan array `items` berisi cukup 1 ringkasan utama pembelian di toko tersebut dengan `total_price` senilai total belanja, sehingga proses cepat untuk struk panjang."
-      : "Mode Ekstraksi: RINCIAN PER BARANG (Detail). Ekstrak setiap baris barang yang tertera di nota ke dalam array `items` secara lengkap.";
+      ? `MODE CATAT TOTAL SAJA: Isi array "items" cukup 1 baris ringkas yang mewakili pembelian utama pada struk tersebut dengan quantity=1, unit_price=total_amount, dan total_price=total_amount.`
+      : `MODE CATAT TIAP BARANG: Baca dan salin SETIAP baris barang/pesanan yang tertulis di foto struk ke dalam array "items" satu per satu sesuai teks asli pada struk (jangan mengarang nama barang yang tidak tertulis di foto).`;
 
-  return `Kamu adalah asisten akuntan dan auditor keuangan ahli di Indonesia. Tugasmu adalah mengekstrak data dari gambar struk belanja, nota kontan tulisan tangan, atau bukti transfer (QRIS/M-Banking) ke dalam format JSON yang terstruktur.
+  return `Anda adalah sistem pembaca struk belanja, nota warung tulis tangan, struk kasir minimarket/restoran, dan bukti pembayaran digital (QRIS / transfer mobile banking / EDC) di Indonesia yang sangat teliti.
 
-Daftar Kategori Proyek yang Tersedia: [${categoryList}]
+Tugas utama: Baca teks yang benar-benar tertulis di dalam gambar dan kembalikan HANYA objek JSON murni sesuai struktur berikut. DILARANG mengarang nama toko, tanggal, atau barang yang tidak ada di gambar.
+
+Daftar kategori pengeluaran yang tersedia: [${categoryList}]
 ${detailInstruction}
 
-Aturan Ekstraksi Konteks Indonesia:
-1. Format Angka: Di Indonesia, titik (.) digunakan sebagai pemisah ribuan (contoh: "15.000" atau "15,000" pada mesin kasir berarti 15000). Singkatan "k" atau "rb" pada nota tulisan tangan berarti ribu (contoh: "25k" = 25000). Kembalikan semua nilai uang dalam bentuk integer/number murni tanpa titik/koma atau simbol Rp.
-2. Tanggal: Ubah format tanggal Indonesia (DD/MM/YYYY, DD-MM-YY, atau "12 Agt ${currentYear}") menjadi standar ISO "YYYY-MM-DD". Jika tahun tidak tertulis di nota warung, gunakan tahun berjalan saat ini (${currentYear}). Jika tanggal sama sekali tidak ditemukan, kembalikan null.
-3. Kategori: Pilih satu kategori yang paling cocok dari daftar yang diberikan pengguna berdasarkan nama toko dan jenis barang yang dibeli.
-4. Validasi Matematika: Pastikan \`total_amount\` adalah jumlah akhir yang benar-benar dibayar (setelah ditambah pajak/biaya layanan dan dikurangi diskon/voucher). Jangan tertukar antara \`TOTAL\` dengan \`TUNAI/CASH\` (uang yang diserahkan) atau \`KEMBALI/CHANGE\`.
-5. Confidence Score: Berikan nilai 0.0 hingga 1.0 pada \`confidence_score\`. Berikan nilai di bawah 0.75 jika gambar buram, terpotong, tulisan tangan sangat sulit dibaca, atau total penjumlahan item tidak cocok dengan total akhir di nota.`;
+Aturan pembacaan wajib agar 100% akurat sesuai foto:
+1. "merchant_name" (Nama Toko / Penerima):
+   - Ambil nama toko, warung, restoran, SPBU, atau merchant penerima pembayaran yang tercetak paling atas atau pada bagian tujuan pembayaran.
+   - Contoh: "PT INDOMARCO PRISMATAMA" atau logo "Indomaret" -> tulis "Indomaret"; "PT SUMBER ALFARIA TRIJAYA" -> tulis "Alfamart".
+   - Pada bukti QRIS / Transfer M-Banking, ambil nama Merchant / Penerima dana (bukan nama pengirim dan bukan nama aplikasi banknya).
+
+2. "transaction_date" (Tanggal Transaksi format "YYYY-MM-DD"):
+   - Baca tanggal yang tertulis di struk dengan teliti. Format di Indonesia umumnya DD/MM/YYYY, DD-MM-YY, DD.MM.YY, atau "18 Nov 2026" (hari dulu, baru bulan, baru tahun).
+   - Contoh: "05/11/26" atau "05-11-2026" berarti "2026-11-05" (5 November 2026, BUKAN 11 Mei).
+   - Jika hanya tertulis tanggal dan bulan tanpa tahun (misal nota tulis tangan "14 Nov"), gunakan tahun ${currentYear}.
+   - Jika tidak ada tanggal sama sekali di foto, isi dengan string kosong "".
+
+3. "payment_method" (Wajib pilih salah satu persis: "Tunai", "QRIS", "Transfer", "Kartu", "Lainnya"):
+   - Pilih "QRIS" jika di struk/layar tertulis QRIS, GoPay, OVO, DANA, ShopeePay, LinkAja, atau tampilan pembayaran QR.
+   - Pilih "Transfer" jika gambar berupa bukti transfer bank (BCA, Mandiri/Livin, BRI/BRImo, BNI, SeaBank, Jago, BSI, BI-FAST, Virtual Account).
+   - Pilih "Kartu" jika tertulis DEBIT, KREDIT, EDC, FLAZZ, E-MONEY, BRIZZI, TAPCASH, VISA, atau MASTERCARD.
+   - Pilih "Tunai" jika tertulis TUNAI, CASH, ada baris uang KEMBALI/CHANGE, atau berupa nota kontan kertas biasa tanpa keterangan nontunai.
+
+4. "items" (Daftar Barang yang Dibeli):
+   - Pada struk kasir 2 baris (baris atas nama produk, baris bawah "2 X 3.500 = 7.000"), gabungkan menjadi 1 item: item_name sesuai nama produk, quantity=2, unit_price=3500, total_price=7000.
+   - JANGAN memasukkan baris "TUNAI", "CASH", "KEMBALI", "CHANGE", "SUBTOTAL", "PPN", "DPP", atau "ANDA HEMAT" ke dalam daftar "items".
+   - Di Indonesia titik (.) atau koma (,) pada harga ribuan (contoh "15.000" atau "15,000" atau "15.000,00" atau "15rb" / "15k") berarti angka bulat 15000. Tulis semua nominal uang sebagai angka bulat Rupiah tanpa titik/koma.
+
+5. Hitungan "subtotal", "tax_and_service", "discount", dan "total_amount":
+   - "subtotal": jumlah harga barang sebelum pajak/biaya tambahan dan sebelum diskon.
+   - "tax_and_service": pajak (PPN/PB1/Tax) ditambah biaya layanan/service/biaya admin/ongkir jika tertulis terpisah (isi 0 jika tidak ada atau sudah termasuk di harga barang).
+   - "discount": total potongan harga/diskon/voucher (angka positif, isi 0 jika tidak ada).
+   - "total_amount": nominal akhir yang benar-benar dibayar pembeli. JANGAN tertukar dengan jumlah uang tunai yang diserahkan kasir (CASH/BAYAR) atau uang kembalian (KEMBALI/CHANGE).
+
+6. "confidence_score" & "warning_message":
+   - Isi angka 0.0 sampai 1.0 (isi >= 0.9 jika foto tajam dan semua angka cocok; isi < 0.8 jika foto buram, terpotong, atau tulisan tangan meragukan).
+   - Isi "warning_message" dengan penjelasan singkat bahasa Indonesia bila ada bagian yang buram/meragukan, atau string kosong "" bila semuanya jelas.`;
 }
 
 export const RECEIPT_JSON_SCHEMA = {
   type: "object",
   properties: {
-    merchant_name: {
-      type: "string",
-      description: "Nama toko, warung, minimarket, atau penerima transfer",
-    },
-    transaction_date: {
-      type: ["string", "null"],
-      description: "Tanggal transaksi dalam format YYYY-MM-DD",
-    },
-    category: {
-      type: "string",
-      description: "Kategori pengeluaran yang paling relevan dari daftar kategori proyek",
-    },
+    merchant_name: { type: "string" },
+    transaction_date: { type: "string" },
+    category: { type: "string" },
     payment_method: {
       type: "string",
       enum: ["Tunai", "QRIS", "Transfer", "Kartu", "Lainnya"],
@@ -46,18 +69,9 @@ export const RECEIPT_JSON_SCHEMA = {
     subtotal: { type: "number" },
     tax_and_service: { type: "number" },
     discount: { type: "number" },
-    total_amount: {
-      type: "number",
-      description: "Nominal akhir yang dibayarkan (bukan uang tunai yang diserahkan atau kembalian)",
-    },
-    confidence_score: {
-      type: "number",
-      description: "Tingkat keyakinan akurasi pembacaan antara 0.0 sampai 1.0",
-    },
-    warning_message: {
-      type: ["string", "null"],
-      description: "Alasan jika confidence_score rendah, misalnya 'Tulisan tangan buram pada baris ke-2' atau 'Total item tidak sama dengan grand total'",
-    },
+    total_amount: { type: "number" },
+    confidence_score: { type: "number" },
+    warning_message: { type: "string" },
     items: {
       type: "array",
       items: {
@@ -76,18 +90,22 @@ export const RECEIPT_JSON_SCHEMA = {
     "merchant_name",
     "transaction_date",
     "category",
+    "payment_method",
+    "subtotal",
+    "tax_and_service",
+    "discount",
     "total_amount",
     "confidence_score",
+    "warning_message",
     "items",
   ],
 } as const;
 
-// Gemini REST responseSchema does not accept array union types like ["string", "null"], so nullable: true is used.
 export const GEMINI_RESPONSE_SCHEMA = {
   type: "OBJECT",
   properties: {
     merchant_name: { type: "STRING" },
-    transaction_date: { type: "STRING", nullable: true },
+    transaction_date: { type: "STRING" },
     category: { type: "STRING" },
     payment_method: {
       type: "STRING",
@@ -98,7 +116,7 @@ export const GEMINI_RESPONSE_SCHEMA = {
     discount: { type: "NUMBER" },
     total_amount: { type: "NUMBER" },
     confidence_score: { type: "NUMBER" },
-    warning_message: { type: "STRING", nullable: true },
+    warning_message: { type: "STRING" },
     items: {
       type: "ARRAY",
       items: {
@@ -117,8 +135,13 @@ export const GEMINI_RESPONSE_SCHEMA = {
     "merchant_name",
     "transaction_date",
     "category",
+    "payment_method",
+    "subtotal",
+    "tax_and_service",
+    "discount",
     "total_amount",
     "confidence_score",
+    "warning_message",
     "items",
   ],
 };
