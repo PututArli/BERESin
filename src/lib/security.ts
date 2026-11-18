@@ -108,11 +108,25 @@ export async function verifyImageMagicBytes(file: Blob): Promise<boolean> {
 
 export function verifySameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
-  const host = request.headers.get("host");
-  if (!origin || !host) return true;
+  if (!origin) return true;
+
+  const allowedHosts = new Set<string>();
+  const rawHost = request.headers.get("host");
+  const forwardedHost = request.headers.get("x-forwarded-host");
+
+  for (const headerVal of [rawHost, forwardedHost]) {
+    if (!headerVal) continue;
+    for (const part of headerVal.split(",")) {
+      const cleaned = part.trim().toLowerCase();
+      if (cleaned) allowedHosts.add(cleaned);
+    }
+  }
+
+  if (allowedHosts.size === 0) return true;
+
   try {
     const parsed = new URL(origin);
-    return parsed.host.toLowerCase() === host.toLowerCase();
+    return allowedHosts.has(parsed.host.toLowerCase());
   } catch {
     return false;
   }

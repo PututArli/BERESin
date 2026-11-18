@@ -11,13 +11,30 @@ import "./globals.css";
 import { LedgerProvider } from "@/components/providers/LedgerProvider";
 import { AppShell } from "@/components/layout/AppShell";
 
+function resolveSafeSiteUrl(): URL {
+  const raw = (process.env.NEXT_PUBLIC_SITE_URL ?? "")
+    .replace(/^['"]+|['"]+$/g, "")
+    .trim();
+  if (!raw) return new URL("https://beresinhahay.my.id");
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(withProtocol);
+  } catch {
+    return new URL("https://beresinhahay.my.id");
+  }
+}
+
 export const metadata: Metadata = {
+  metadataBase: resolveSafeSiteUrl(),
   title: {
     default: "BERESinHAHAY | Foto Nota ke Excel & PDF + Kompres Foto",
     template: "%s | BERESinHAHAY",
   },
   description:
     "Unggah foto struk atau nota warung sebanyak apa pun tanpa batas kuota, lalu langsung unduh rekap Excel dan lampiran PDF A4. Dilengkapi fitur kompres foto.",
+  alternates: {
+    canonical: "/",
+  },
 };
 
 export const viewport: Viewport = {
