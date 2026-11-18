@@ -40,6 +40,10 @@ function stripDataUrlPrefix(input: string): string {
   return commaIdx >= 0 ? input.slice(commaIdx + 1) : input;
 }
 
+function cleanEnvSecret(raw: string | undefined): string {
+  return (raw ?? "").replace(/^['"]+|['"]+$/g, "").trim();
+}
+
 function inferMerchantFromFilename(fileName: string): string {
   const safeName = sanitizePlainText(fileName, 120);
   const withoutExt = safeName.replace(/\.[^.]+$/, "");
@@ -51,7 +55,10 @@ function inferMerchantFromFilename(fileName: string): string {
   return cleaned.length >= 3 ? cleaned.slice(0, 80) : "Nota Baru (Klik Cek untuk Isi)";
 }
 
-function normalizeOcrOutput(raw: OcrExtractedPayload, fallbackCategory: string): OcrExtractedPayload {
+function normalizeOcrOutput(
+  raw: OcrExtractedPayload,
+  fallbackCategory: string
+): OcrExtractedPayload {
   const payment =
     raw.payment_method && ALLOWED_PAYMENT.has(raw.payment_method)
       ? raw.payment_method
@@ -77,6 +84,45 @@ function normalizeOcrOutput(raw: OcrExtractedPayload, fallbackCategory: string):
       total_price: sanitizeMoneyAmount(it?.total_price),
     })),
   };
+}
+
+// Routes AQ.* keys to Vertex AI Express Mode and AIza* keys to Gemini Developer API.
+async function callGeminiVisionEndpoint(
+  apiKey: string,
+  requestPayload: unknown
+): Promise<Response> {
+  const isVertexExpressKey = apiKey.startsWith("AQ.");
+  const primaryUrl = isVertexExpressKey
+    ? "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent"
+    : "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+
+  const fallbackUrl = isVertexExpressKey
+    ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    : "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent";
+
+  const serialized = JSON.stringify(requestPayload);
+  const headers = {
+    "Content-Type": "application/json",
+    "x-goog-api-key": apiKey,
+  };
+
+  const primaryResp = await fetch(primaryUrl, {
+    method: "POST",
+    headers,
+    body: serialized,
+  });
+
+  if (primaryResp.ok) return primaryResp;
+
+  if (primaryResp.status === 400 || primaryResp.status === 401 || primaryResp.status === 403 || primaryResp.status === 404) {
+    return fetch(fallbackUrl, {
+      method: "POST",
+      headers,
+      body: serialized,
+    });
+  }
+
+  return primaryResp;
 }
 
 export async function POST(request: Request) {
@@ -125,11 +171,11 @@ export async function POST(request: Request) {
       body.extractionMode === "summary" ? "summary" : "detailed";
 
     const rawHeaderKey = request.headers.get("x-gemini-api-key")?.trim() || "";
-    const validHeaderKey = /^[A-Za-z0-9_-]{20,120}$/.test(rawHeaderKey)
+    const validHeaderKey = /^[A-Za-z0-9._-]{20,160}$/.test(rawHeaderKey)
       ? rawHeaderKey
       : "";
-    const geminiKey = process.env.GEMINI_API_KEY?.trim() || validHeaderKey;
-    const openaiKey = process.env.OPENAI_API_KEY?.trim() || "";
+    const geminiKey = cleanEnvSecret(process.env.GEMINI_API_KEY) || validHeaderKey;
+    const openaiKey = cleanEnvSecret(process.env.OPENAI_API_KEY);
 
     const currentYear = new Date().getFullYear();
     const systemPrompt = buildIndonesianReceiptSystemPrompt(
@@ -140,40 +186,34 @@ export async function POST(request: Request) {
     const base64Clean = stripDataUrlPrefix(rawImage);
 
     if (geminiKey) {
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-        geminiKey
-      )}`;
+      const geminiPayload = {
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: "Ekstrak seluruh informasi nota ini sesuai skema JSON yang diminta.",
+              },
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Clean,
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: GEMINI_RESPONSE_SCHEMA,
+        },
+      };
 
-      const geminiResp = await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemPrompt }],
-          },
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: "Ekstrak seluruh informasi nota ini sesuai skema JSON yang diminta.",
-                },
-                {
-                  inlineData: {
-                    mimeType,
-                    data: base64Clean,
-                  },
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-            responseSchema: GEMINI_RESPONSE_SCHEMA,
-          },
-        }),
-      });
+      const geminiResp = await callGeminiVisionEndpoint(geminiKey, geminiPayload);
 
       if (!geminiResp.ok) {
         return NextResponse.json(
@@ -284,7 +324,7 @@ export async function POST(request: Request) {
       total_amount: 0,
       confidence_score: 0.5,
       warning_message:
-        "Kunci AI belum diisi. Klik Cek / Edit untuk melengkapi nominal, atau tempel kunci Gemini di menu Kunci AI pada bagian atas.",
+        "Pembaca otomatis belum aktif di server. Klik Cek / Edit untuk mengisi nominal sesuai foto struk.",
       items: [
         {
           item_name: "Belanja sesuai foto struk",

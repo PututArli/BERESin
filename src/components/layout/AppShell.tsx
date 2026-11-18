@@ -14,16 +14,12 @@ import {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { settings, toggleTheme, updateSettings, announcePolite } = useLedger();
+  const { settings, toggleTheme } = useLedger();
 
   const [donateOpen, setDonateOpen] = useState(false);
   const [qrImageSrc, setQrImageSrc] = useState<string | null>(null);
 
-  const [apiDialogOpen, setApiDialogOpen] = useState(false);
-  const [apiKeyDraft, setApiKeyDraft] = useState("");
-
   const donateModalRef = useRef<HTMLDivElement | null>(null);
-  const apiModalRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!donateOpen) return;
@@ -42,12 +38,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [donateOpen]);
 
   useEffect(() => {
-    if (!donateOpen && !apiDialogOpen) return;
-    if (apiDialogOpen) {
-      setApiKeyDraft(settings.geminiApiKey || "");
-    }
-
-    const activeEl = donateOpen ? donateModalRef.current : apiModalRef.current;
+    if (!donateOpen) return;
+    const activeEl = donateModalRef.current;
     if (!activeEl) return;
 
     const focusables = activeEl.querySelectorAll<HTMLElement>(
@@ -61,7 +53,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (e.key === "Escape") {
         e.preventDefault();
         setDonateOpen(false);
-        setApiDialogOpen(false);
         return;
       }
       if (e.key === "Tab" && focusables.length > 0) {
@@ -77,14 +68,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [donateOpen, apiDialogOpen, settings.geminiApiKey]);
-
-  async function handleSaveApiKey(e: React.FormEvent) {
-    e.preventDefault();
-    await updateSettings({ geminiApiKey: apiKeyDraft.trim() });
-    setApiDialogOpen(false);
-    announcePolite("Kunci API Gemini berhasil disimpan.");
-  }
+  }, [donateOpen]);
 
   return (
     <div className="min-h-dvh flex flex-col bg-[var(--bg-paper)] text-[var(--ink-primary)]">
@@ -148,14 +132,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               >
                 <QrCodeIcon className="w-4 h-4 text-[var(--stamp-accent)]" />
                 <span>Donasi</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setApiDialogOpen(true)}
-                className="btn-secondary !px-3 text-xs sm:text-sm"
-              >
-                <span>Kunci AI</span>
               </button>
 
               <button
@@ -300,88 +276,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               Selesai
             </button>
-          </div>
-        </div>
-      )}
-
-      {apiDialogOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ backgroundColor: "var(--modal-scrim)" }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setApiDialogOpen(false);
-          }}
-        >
-          <div
-            ref={apiModalRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="judul-dialog-ai"
-            className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-5 sm:p-6 space-y-4"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2
-                  id="judul-dialog-ai"
-                  className="font-serif-ledger font-bold text-xl text-[var(--ink-primary)]"
-                >
-                  Kunci Google Gemini AI (Opsional)
-                </h2>
-                <p className="text-xs sm:text-sm text-[var(--ink-secondary)] mt-0.5">
-                  Isi kunci API Gemini agar foto nota otomatis dibaca AI tanpa batas kuota dari peramban Anda (jika server belum mengaturnya).
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setApiDialogOpen(false)}
-                aria-label="Tutup dialog kunci AI"
-                className="btn-secondary !p-2 min-w-[44px]"
-              >
-                <CloseXIcon />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveApiKey} className="space-y-4">
-              <div>
-                <label
-                  htmlFor="input-modal-gemini-key"
-                  className="block text-sm font-semibold text-[var(--ink-primary)] mb-1.5"
-                >
-                  Gemini API Key
-                </label>
-                <input
-                  id="input-modal-gemini-key"
-                  type="password"
-                  autoComplete="off"
-                  value={apiKeyDraft}
-                  onChange={(e) => setApiKeyDraft(e.target.value)}
-                  placeholder="AIza..."
-                  className="input-ledger font-mono-tabular"
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                {apiKeyDraft && (
-                  <button
-                    type="button"
-                    onClick={() => setApiKeyDraft("")}
-                    className="btn-secondary text-xs"
-                  >
-                    Kosongkan
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setApiDialogOpen(false)}
-                  className="btn-secondary"
-                >
-                  Batal
-                </button>
-                <button type="submit" className="btn-ledger">
-                  Simpan Kunci
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}
