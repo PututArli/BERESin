@@ -1,8 +1,8 @@
 {
-  "name": "beresin",
-  "version": "1.0.0",
+  "name": "beresinhahay",
+  "version": "1.1.0",
   "private": true,
-  "description": "BERESin: Rekap nota otomatis dan pembuat lampiran LPJ siap cetak untuk kepanitiaan, reimbursement kantor, dan UMKM Indonesia.",
+  "description": "BERESinHAHAY: Rekap foto nota ke Excel & PDF LPJ tanpa batas kuota, dilengkapi alat kompresi foto instan di peramban.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -13,11 +13,12 @@
     "@fontsource/ibm-plex-mono": "^5.2.5",
     "@fontsource/newsreader": "^5.2.5",
     "@fontsource/plus-jakarta-sans": "^5.2.5",
-    "@supabase/supabase-js": "^2.49.1",
     "browser-image-compression": "^2.0.2",
     "jspdf": "^3.0.0",
     "jspdf-autotable": "^5.0.2",
+    "jszip": "^3.10.1",
     "next": "^15.2.4",
+    "postgres": "^3.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "xlsx": "^0.18.5"
