@@ -1,6 +1,6 @@
 import type { AppSettings, Project, Receipt } from "@/types/beresin";
-import { findDuplicateReceipt, formatReferenceNumber, todayIsoDate } from "@/lib/format";
-import { renderSimulatedReceiptDataUrl } from "@/lib/receipt-canvas";
+import { findDuplicateReceipt, formatReferenceNumber } from "@/lib/format";
+import { isValidWorkspaceId } from "@/lib/security";
 
 const DB_NAME = "beresinhahay_v2";
 const DB_VERSION = 1;
@@ -15,13 +15,16 @@ const DEFAULT_CATEGORIES = [
 ];
 
 export function getOrCreateWorkspaceId(): string {
-  if (typeof window === "undefined") return "default-workspace";
-  let existing = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
-  if (!existing) {
-    existing = `ws-${crypto.randomUUID()}`;
-    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, existing);
+  if (typeof window === "undefined") {
+    return "ws-00000000-0000-4000-8000-000000000000";
   }
-  return existing;
+  const existing = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+  if (isValidWorkspaceId(existing)) {
+    return existing;
+  }
+  const generated = `ws-${crypto.randomUUID()}`;
+  window.localStorage.setItem(WORKSPACE_STORAGE_KEY, generated);
+  return generated;
 }
 
 function openLocalDb(): Promise<IDBDatabase> {
@@ -219,15 +222,21 @@ export async function saveReceipt(receipt: Receipt): Promise<Receipt> {
   return finalized;
 }
 
-export async function deleteReceipt(receiptId: string): Promise<void> {
+export async function deleteReceipt(
+  receiptId: string,
+  workspaceId: string
+): Promise<void> {
   const db = await openLocalDb();
   const tx = db.transaction("receipts", "readwrite");
   await txReq(tx.objectStore("receipts").delete(receiptId));
 
   try {
-    await fetch(`/api/receipts?id=${encodeURIComponent(receiptId)}`, {
-      method: "DELETE",
-    });
+    await fetch(
+      `/api/receipts?id=${encodeURIComponent(receiptId)}&workspaceId=${encodeURIComponent(
+        workspaceId
+      )}`,
+      { method: "DELETE" }
+    );
   } catch {
     // Ignore network error after local delete
   }
@@ -250,195 +259,4 @@ export async function clearAllWorkspaceReceipts(workspaceId: string): Promise<vo
   } catch {
     // Ignore network error after local clear
   }
-}
-
-export async function seedSampleReceipts(workspaceId: string): Promise<Receipt[]> {
-  const dateBase = todayIsoDate();
-  const r1Id = crypto.randomUUID();
-  const r2Id = crypto.randomUUID();
-  const r3Id = crypto.randomUUID();
-
-  const img1 = renderSimulatedReceiptDataUrl({
-    kind: "thermal",
-    refLabel: "SIM-001",
-    title: "INDOMARET POINT KAMPUS",
-    subtitle: "Jl. Pendidikan No. 14",
-    dateText: dateBase,
-    lines: [
-      { label: "ROTI SOBEK COKELAT", qty: "5 x 18.000", price: "90.000" },
-      { label: "TEH PUCUK 350ML", qty: "12 x 4.500", price: "54.000" },
-    ],
-    footerRows: [
-      { label: "TOTAL BAYAR (QRIS)", value: "Rp 144.000", bold: true },
-    ],
-  });
-
-  const img2 = renderSimulatedReceiptDataUrl({
-    kind: "warung",
-    refLabel: "SIM-002",
-    title: "Warung Makan Bu Siti",
-    subtitle: "Nota Kontan Konsumsi",
-    dateText: dateBase,
-    lines: [
-      { label: "Nasi Kotak Ayam Bakar", qty: "13 ktk x 25k", price: "325.000" },
-      { label: "Air Mineral Gelas Dus", qty: "2 dus x 25k", price: "50.000" },
-    ],
-    footerRows: [
-      { label: "Jumlah Nota Kontan", value: "Rp 375.000", bold: true },
-    ],
-  });
-
-  const img3 = renderSimulatedReceiptDataUrl({
-    kind: "qris",
-    refLabel: "SIM-003",
-    title: "BUKTI PEMBAYARAN QRIS",
-    subtitle: "Penerima: Percetakan & ATK Jaya",
-    dateText: dateBase,
-    lines: [
-      { label: "Cetak Spanduk 3x1m Outdoor", qty: "2 lbr x 75.000", price: "150.000" },
-      { label: "Tali Lanyard Panitia", qty: "22 pcs x 5.000", price: "110.000" },
-    ],
-    footerRows: [
-      { label: "TOTAL TRANSFER", value: "Rp 260.000", bold: true },
-    ],
-  });
-
-  const baseRef1 = await nextReferenceNumber(workspaceId);
-  const startNum = parseInt(baseRef1.replace(/\D/g, ""), 10) || 1;
-
-  const samples: Receipt[] = [
-    {
-      id: r1Id,
-      projectId: workspaceId,
-      referenceNumber: formatReferenceNumber(startNum),
-      imageUrl: img1,
-      imageHash: `sim-hash-1-${r1Id}`,
-      extractionMode: "detailed",
-      merchantName: "[DATA SIMULASI] Indomaret Point Kampus",
-      transactionDate: dateBase,
-      category: "Konsumsi",
-      subtotal: 144_000,
-      taxAndService: 0,
-      discount: 0,
-      totalAmount: 144_000,
-      paymentMethod: "QRIS",
-      confidenceScore: 0.97,
-      warningMessage: null,
-      isDuplicate: false,
-      duplicateOfRef: null,
-      isSimulation: true,
-      status: "verified",
-      notes: "Konsumsi rapat panitia.",
-      items: [
-        {
-          id: crypto.randomUUID(),
-          receiptId: r1Id,
-          itemName: "Roti Sobek Cokelat",
-          quantity: 5,
-          unitPrice: 18_000,
-          totalPrice: 90_000,
-        },
-        {
-          id: crypto.randomUUID(),
-          receiptId: r1Id,
-          itemName: "Teh Pucuk 350ml",
-          quantity: 12,
-          unitPrice: 4_500,
-          totalPrice: 54_000,
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: r2Id,
-      projectId: workspaceId,
-      referenceNumber: formatReferenceNumber(startNum + 1),
-      imageUrl: img2,
-      imageHash: `sim-hash-2-${r2Id}`,
-      extractionMode: "detailed",
-      merchantName: "[DATA SIMULASI] Warung Makan Bu Siti",
-      transactionDate: dateBase,
-      category: "Konsumsi",
-      subtotal: 365_000,
-      taxAndService: 0,
-      discount: 0,
-      totalAmount: 375_000,
-      paymentMethod: "Tunai",
-      confidenceScore: 0.7,
-      warningMessage:
-        "Contoh simulasi: baris ke-2 terbaca Rp 20.000 sehingga selisih Rp 10.000. Klik Cek / Edit untuk mencoba koreksi.",
-      isDuplicate: false,
-      duplicateOfRef: null,
-      isSimulation: true,
-      status: "needs_review",
-      notes: "",
-      items: [
-        {
-          id: crypto.randomUUID(),
-          receiptId: r2Id,
-          itemName: "Nasi Kotak Ayam Bakar",
-          quantity: 13,
-          unitPrice: 25_000,
-          totalPrice: 325_000,
-        },
-        {
-          id: crypto.randomUUID(),
-          receiptId: r2Id,
-          itemName: "Air Mineral Gelas Dus",
-          quantity: 2,
-          unitPrice: 20_000,
-          totalPrice: 40_000,
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: r3Id,
-      projectId: workspaceId,
-      referenceNumber: formatReferenceNumber(startNum + 2),
-      imageUrl: img3,
-      imageHash: `sim-hash-3-${r3Id}`,
-      extractionMode: "detailed",
-      merchantName: "[DATA SIMULASI] Percetakan & ATK Jaya",
-      transactionDate: dateBase,
-      category: "Perlengkapan",
-      subtotal: 260_000,
-      taxAndService: 0,
-      discount: 0,
-      totalAmount: 260_000,
-      paymentMethod: "QRIS",
-      confidenceScore: 0.95,
-      warningMessage: null,
-      isDuplicate: false,
-      duplicateOfRef: null,
-      isSimulation: true,
-      status: "verified",
-      notes: "Spanduk dan tanda pengenal.",
-      items: [
-        {
-          id: crypto.randomUUID(),
-          receiptId: r3Id,
-          itemName: "Cetak Spanduk 3x1m Outdoor",
-          quantity: 2,
-          unitPrice: 75_000,
-          totalPrice: 150_000,
-        },
-        {
-          id: crypto.randomUUID(),
-          receiptId: r3Id,
-          itemName: "Tali Lanyard Panitia",
-          quantity: 22,
-          unitPrice: 5_000,
-          totalPrice: 110_000,
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    },
-  ];
-
-  const saved: Receipt[] = [];
-  for (const s of samples) {
-    saved.push(await saveReceipt(s));
-  }
-  return saved;
 }

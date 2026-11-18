@@ -1,34 +1,128 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import type { Receipt } from "@/types/beresin";
+import {
+  checkRateLimit,
+  getClientIp,
+  isValidSafeImageDataUrl,
+  isValidUuid,
+  isValidWorkspaceId,
+  readBoundedJson,
+  sanitizeMoneyAmount,
+  sanitizePlainText,
+  sanitizeQuantity,
+  sanitizeSafeDate,
+  verifySameOrigin,
+} from "@/lib/security";
+import type { PaymentMethod, Receipt, ReceiptStatus } from "@/types/beresin";
+
+const ALLOWED_STATUS = new Set<ReceiptStatus>([
+  "processing",
+  "needs_review",
+  "verified",
+  "failed",
+]);
+
+const ALLOWED_PAYMENT = new Set<PaymentMethod>([
+  "Tunai",
+  "QRIS",
+  "Transfer",
+  "Kartu",
+  "Lainnya",
+]);
 
 export async function POST(request: Request) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Asal permintaan ditolak." }, { status: 403 });
+  }
+
+  const ip = getClientIp(request);
+  if (!checkRateLimit(`receipts-post:${ip}`, 80, 60_000)) {
+    return NextResponse.json(
+      { error: "Terlalu banyak permintaan. Coba lagi sebentar." },
+      { status: 429 }
+    );
+  }
+
   const sql = getSql();
   if (!sql) {
     return NextResponse.json({ cloudEnabled: false }, { status: 200 });
   }
 
+  const parsed = await readBoundedJson<{
+    workspaceId?: string;
+    receipt?: Receipt;
+  }>(request, 3_600_000);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+  }
+
+  const rawWsId = parsed.data.workspaceId ?? parsed.data.receipt?.projectId;
+  const r = parsed.data.receipt;
+
+  if (!isValidWorkspaceId(rawWsId) || !r || !isValidUuid(r.id)) {
+    return NextResponse.json(
+      { error: "Identitas nota atau ruang kerja tidak valid." },
+      { status: 400 }
+    );
+  }
+
+  if (!isValidSafeImageDataUrl(r.imageUrl)) {
+    return NextResponse.json(
+      { error: "Format gambar nota tidak diizinkan." },
+      { status: 400 }
+    );
+  }
+
+  const workspaceId = rawWsId.trim();
+  const receiptId = r.id.trim();
+  const refNumber = sanitizePlainText(r.referenceNumber, 24) || "NOTA-001";
+  const imageHash = sanitizePlainText(r.imageHash, 128) || null;
+  const extractionMode = r.extractionMode === "summary" ? "summary" : "detailed";
+  const merchantName = sanitizePlainText(r.merchantName, 160) || "Nota Baru";
+  const transactionDate = sanitizeSafeDate(r.transactionDate);
+  const category = sanitizePlainText(r.category, 50) || "Lain-lain";
+  const subtotal = sanitizeMoneyAmount(r.subtotal);
+  const taxAndService = sanitizeMoneyAmount(r.taxAndService);
+  const discount = sanitizeMoneyAmount(r.discount);
+  const totalAmount = sanitizeMoneyAmount(r.totalAmount);
+  const paymentMethod: PaymentMethod = ALLOWED_PAYMENT.has(r.paymentMethod)
+    ? r.paymentMethod
+    : "Tunai";
+  const confidenceScore = Math.min(
+    1,
+    Math.max(0, Number(r.confidenceScore) || 0.5)
+  );
+  const warningMessage = r.warningMessage
+    ? sanitizePlainText(r.warningMessage, 300)
+    : null;
+  const isDuplicate = Boolean(r.isDuplicate);
+  const duplicateOfRef = r.duplicateOfRef
+    ? sanitizePlainText(r.duplicateOfRef, 24)
+    : null;
+  const status: ReceiptStatus = ALLOWED_STATUS.has(r.status)
+    ? r.status
+    : "needs_review";
+  const notes = sanitizePlainText(r.notes, 500);
+
+  const safeItems = (Array.isArray(r.items) ? r.items : [])
+    .slice(0, 150)
+    .map((item) => ({
+      id: isValidUuid(item?.id) ? item.id.trim() : crypto.randomUUID(),
+      receiptId,
+      itemName: sanitizePlainText(item?.itemName, 160) || "Barang",
+      quantity: sanitizeQuantity(item?.quantity ?? 1),
+      unitPrice: sanitizeMoneyAmount(item?.unitPrice),
+      totalPrice: sanitizeMoneyAmount(item?.totalPrice),
+    }));
+
   try {
-    const body = (await request.json()) as {
-      workspaceId?: string;
-      receipt?: Receipt;
-    };
-    const workspaceId = (body.workspaceId ?? body.receipt?.projectId ?? "").trim();
-    const r = body.receipt;
-
-    if (!workspaceId || !r?.id) {
-      return NextResponse.json(
-        { error: "Data nota atau workspaceId tidak lengkap." },
-        { status: 400 }
-      );
-    }
-
     await sql`
       INSERT INTO workspaces (id, report_title)
       VALUES (${workspaceId}, 'Laporan Pengeluaran Kegiatan')
       ON CONFLICT (id) DO NOTHING
     `;
 
+    // Enforce ownership on conflict so a UUID belonging to another workspace cannot be overwritten.
     await sql`
       INSERT INTO receipts (
         id, workspace_id, reference_number, image_url, image_hash, extraction_mode,
@@ -37,28 +131,28 @@ export async function POST(request: Request) {
         is_duplicate, duplicate_of_ref, is_simulation, status, notes, items
       )
       VALUES (
-        ${r.id},
+        ${receiptId},
         ${workspaceId},
-        ${r.referenceNumber},
+        ${refNumber},
         ${r.imageUrl},
-        ${r.imageHash || null},
-        ${r.extractionMode || "detailed"},
-        ${r.merchantName || ""},
-        ${r.transactionDate || null},
-        ${r.category || "Lain-lain"},
-        ${r.subtotal || 0},
-        ${r.taxAndService || 0},
-        ${r.discount || 0},
-        ${r.totalAmount || 0},
-        ${r.paymentMethod || "Tunai"},
-        ${r.confidenceScore ?? 1},
-        ${r.warningMessage || null},
-        ${Boolean(r.isDuplicate)},
-        ${r.duplicateOfRef || null},
-        ${Boolean(r.isSimulation)},
-        ${r.status || "needs_review"},
-        ${r.notes || ""},
-        ${JSON.stringify(r.items ?? [])}::jsonb
+        ${imageHash},
+        ${extractionMode},
+        ${merchantName},
+        ${transactionDate},
+        ${category},
+        ${subtotal},
+        ${taxAndService},
+        ${discount},
+        ${totalAmount},
+        ${paymentMethod},
+        ${confidenceScore},
+        ${warningMessage},
+        ${isDuplicate},
+        ${duplicateOfRef},
+        FALSE,
+        ${status},
+        ${notes},
+        ${JSON.stringify(safeItems)}::jsonb
       )
       ON CONFLICT (id) DO UPDATE SET
         reference_number = EXCLUDED.reference_number,
@@ -77,49 +171,68 @@ export async function POST(request: Request) {
         status = EXCLUDED.status,
         notes = EXCLUDED.notes,
         items = EXCLUDED.items
+      WHERE receipts.workspace_id = ${workspaceId}
     `;
 
     return NextResponse.json({ ok: true, cloudEnabled: true });
-  } catch (err) {
+  } catch {
     return NextResponse.json(
-      {
-        ok: false,
-        error: err instanceof Error ? err.message : "Gagal menyimpan nota ke database.",
-      },
+      { ok: false, error: "Penyimpanan nota sementara tidak tersedia." },
       { status: 500 }
     );
   }
 }
 
 export async function DELETE(request: Request) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Asal permintaan ditolak." }, { status: 403 });
+  }
+
+  const ip = getClientIp(request);
+  if (!checkRateLimit(`receipts-del:${ip}`, 80, 60_000)) {
+    return NextResponse.json(
+      { error: "Terlalu banyak permintaan. Coba lagi sebentar." },
+      { status: 429 }
+    );
+  }
+
   const sql = getSql();
   if (!sql) {
     return NextResponse.json({ cloudEnabled: false }, { status: 200 });
   }
 
   const { searchParams } = new URL(request.url);
-  const receiptId = searchParams.get("id")?.trim();
-  const workspaceId = searchParams.get("workspaceId")?.trim();
+  const rawReceiptId = searchParams.get("id");
+  const rawWsId = searchParams.get("workspaceId");
 
-  try {
-    if (receiptId) {
-      await sql`DELETE FROM receipts WHERE id = ${receiptId}`;
-      return NextResponse.json({ ok: true });
-    }
-    if (workspaceId) {
-      await sql`DELETE FROM receipts WHERE workspace_id = ${workspaceId}`;
-      return NextResponse.json({ ok: true });
-    }
+  if (!isValidWorkspaceId(rawWsId)) {
     return NextResponse.json(
-      { error: "Parameter id atau workspaceId diperlukan." },
+      { error: "Identitas ruang kerja diperlukan dan harus valid." },
       { status: 400 }
     );
-  } catch (err) {
+  }
+  const workspaceId = rawWsId.trim();
+
+  try {
+    if (rawReceiptId !== null) {
+      if (!isValidUuid(rawReceiptId)) {
+        return NextResponse.json(
+          { error: "Identitas nota tidak valid." },
+          { status: 400 }
+        );
+      }
+      await sql`
+        DELETE FROM receipts
+        WHERE id = ${rawReceiptId.trim()} AND workspace_id = ${workspaceId}
+      `;
+      return NextResponse.json({ ok: true });
+    }
+
+    await sql`DELETE FROM receipts WHERE workspace_id = ${workspaceId}`;
+    return NextResponse.json({ ok: true });
+  } catch {
     return NextResponse.json(
-      {
-        ok: false,
-        error: err instanceof Error ? err.message : "Gagal menghapus nota.",
-      },
+      { ok: false, error: "Penghapusan nota sementara tidak tersedia." },
       { status: 500 }
     );
   }

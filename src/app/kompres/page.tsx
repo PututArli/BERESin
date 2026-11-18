@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import imageCompression from "browser-image-compression";
 import JSZip from "jszip";
 import type { CompressedPhotoItem } from "@/types/beresin";
+import { sanitizePlainText, verifyImageMagicBytes } from "@/lib/security";
 import { useLedger } from "@/components/providers/LedgerProvider";
 import {
   AlertTriangleIcon,
@@ -35,11 +36,17 @@ function getImageDimensions(url: string): Promise<{ width: number; height: numbe
   });
 }
 
-function buildOutputFilename(originalName: string, mime: string): string {
-  const base = originalName.replace(/\.[^.]+$/, "");
-  if (mime === "image/webp") return `${base}-kompres.webp`;
-  if (mime === "image/png") return `${base}-kompres.png`;
-  return `${base}-kompres.jpg`;
+// Strips path separators and unsafe characters before packaging filenames into downloads or ZIP archives.
+function buildSafeOutputFilename(originalName: string, mime: string): string {
+  const leaf = sanitizePlainText(originalName, 120)
+    .replace(/^.*[\\/]/, "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-zA-Z0-9._ -]/g, "-")
+    .trim();
+  const safeBase = leaf || "foto";
+  if (mime === "image/webp") return `${safeBase}-kompres.webp`;
+  if (mime === "image/png") return `${safeBase}-kompres.png`;
+  return `${safeBase}-kompres.jpg`;
 }
 
 export default function PhotoCompressorPage() {
@@ -83,9 +90,19 @@ export default function PhotoCompressorPage() {
 
   async function handleFiles(fileList: FileList | File[] | null) {
     if (!fileList) return;
-    const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
-    if (files.length === 0) {
-      setErrorMsg("Pilih berkas gambar berformat JPG, PNG, atau WebP.");
+    const candidates = Array.from(fileList);
+    if (candidates.length === 0) return;
+
+    const verifiedFiles: File[] = [];
+    for (const candidate of candidates) {
+      const ok = await verifyImageMagicBytes(candidate);
+      if (ok) verifiedFiles.push(candidate);
+    }
+
+    if (verifiedFiles.length === 0) {
+      setErrorMsg(
+        "Berkas ditolak: hanya gambar asli berformat JPG, PNG, atau WebP (maks. 25 MB) yang diizinkan."
+      );
       return;
     }
 
@@ -94,16 +111,18 @@ export default function PhotoCompressorPage() {
     const batch: CompressedPhotoItem[] = [];
 
     try {
-      for (let i = 0; i < files.length; i += 1) {
-        const file = files[i];
-        setProgressMsg(`Mengompres foto ${i + 1} dari ${files.length} (${file.name})...`);
+      for (let i = 0; i < verifiedFiles.length; i += 1) {
+        const file = verifiedFiles[i];
+        setProgressMsg(
+          `Mengompres foto ${i + 1} dari ${verifiedFiles.length} (${file.name})...`
+        );
 
         const desiredMime = outputFormat === "keep" ? file.type : outputFormat;
         const compressedBlob = await imageCompression(file, {
           maxSizeMB: targetMaxMb,
           maxWidthOrHeight: maxDimension > 0 ? maxDimension : undefined,
           fileType: desiredMime || undefined,
-          useWebWorker: true,
+          useWebWorker: false,
         });
 
         // Keep original file if it is already smaller and format did not change.
@@ -118,7 +137,7 @@ export default function PhotoCompressorPage() {
         batch.push({
           id: crypto.randomUUID(),
           originalName: file.name,
-          outputName: buildOutputFilename(file.name, finalBlob.type || file.type),
+          outputName: buildSafeOutputFilename(file.name, finalBlob.type || file.type),
           originalBytes: file.size,
           compressedBytes: finalBlob.size,
           previewUrl,
@@ -178,7 +197,7 @@ export default function PhotoCompressorPage() {
       const zipUrl = URL.createObjectURL(zipBlob);
       const a = document.createElement("a");
       a.href = zipUrl;
-      a.download = `foto-kompres-beresinhahay.zip`;
+      a.download = "foto-kompres-beresinhahay.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -206,26 +225,26 @@ export default function PhotoCompressorPage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-8">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-10 md:py-12 space-y-6 sm:space-y-8">
       <section className="space-y-2">
-        <h1 className="font-serif-ledger font-bold text-3xl sm:text-4xl text-[var(--ink-primary)] tracking-tight">
+        <h1 className="font-serif-ledger font-bold text-[clamp(1.65rem,4vw,2.35rem)] leading-tight text-[var(--ink-primary)] tracking-tight">
           Kompres foto langsung di peramban.
         </h1>
-        <p className="text-base text-[var(--ink-secondary)] max-w-2xl">
+        <p className="text-sm sm:text-base text-[var(--ink-secondary)] max-w-2xl">
           Kecilkan ukuran banyak foto sekaligus tanpa batas kuota. Semua foto diproses di perangkat Anda sendiri sehingga cepat dan aman.
         </p>
       </section>
 
-      <section className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-control)] p-4 sm:p-5 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-          <div className="md:col-span-6">
+      <section className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-control)] p-4 sm:p-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 items-end">
+          <div className="sm:col-span-2 lg:col-span-6">
             <span className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5">
               Target Ukuran Maksimal
             </span>
             <div
               role="group"
               aria-label="Pilih target ukuran kompresi"
-              className="flex flex-wrap gap-1.5"
+              className="flex flex-wrap gap-2"
             >
               {(
                 [
@@ -254,7 +273,7 @@ export default function PhotoCompressorPage() {
             </div>
           </div>
 
-          <div className="md:col-span-3">
+          <div className="lg:col-span-3">
             <label
               htmlFor="select-max-dim"
               className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5"
@@ -273,7 +292,7 @@ export default function PhotoCompressorPage() {
             </select>
           </div>
 
-          <div className="md:col-span-3">
+          <div className="lg:col-span-3">
             <label
               htmlFor="select-out-format"
               className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5"
@@ -306,7 +325,7 @@ export default function PhotoCompressorPage() {
           setDragging(false);
           void handleFiles(e.dataTransfer.files);
         }}
-        className={`rounded-[8px] border-2 border-dashed p-4 sm:p-10 text-center transition-colors ${
+        className={`rounded-[8px] border-2 border-dashed p-5 sm:p-8 md:p-10 text-center transition-colors ${
           dragging
             ? "bg-[var(--verified-bg)] border-[var(--color-ledger)]"
             : "bg-[var(--bg-surface)] border-[var(--border-control)]"
@@ -316,7 +335,7 @@ export default function PhotoCompressorPage() {
           ref={fileInputRef}
           id="input-kompres-foto"
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/webp"
           multiple
           disabled={processing}
           onChange={(e) => void handleFiles(e.target.files)}
@@ -326,11 +345,11 @@ export default function PhotoCompressorPage() {
         <div className="max-w-md mx-auto space-y-3">
           <label
             htmlFor="input-kompres-foto"
-            className={`btn-stamp text-base px-4 sm:px-6 py-3 w-full sm:w-auto ${
+            className={`btn-stamp text-sm sm:text-base px-4 sm:px-6 py-3 w-full sm:w-auto ${
               processing ? "opacity-60 pointer-events-none" : ""
             }`}
           >
-            <UploadStackIcon className="w-5 h-5" />
+            <UploadStackIcon className="w-5 h-5 shrink-0" />
             <span>
               {processing ? "Sedang Mengompres..." : "Pilih Foto untuk Dikompres"}
             </span>
@@ -354,21 +373,21 @@ export default function PhotoCompressorPage() {
       {errorMsg && (
         <div
           role="alert"
-          className="p-4 rounded-[8px] border-2 flex items-center gap-2.5 text-sm font-semibold"
+          className="p-4 rounded-[8px] border-2 flex items-start gap-2.5 text-sm font-semibold"
           style={{
             backgroundColor: "var(--stamp-tint-bg)",
             color: "var(--stamp-tint-ink)",
             borderColor: "var(--stamp-tint-border)",
           }}
         >
-          <AlertTriangleIcon className="w-5 h-5 shrink-0" />
+          <AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
           <span>{errorMsg}</span>
         </div>
       )}
 
       {items.length > 0 && (
         <section aria-label="Daftar foto hasil kompresi" className="space-y-4">
-          <div className="rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--color-ledger)] p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--color-ledger)] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="text-sm">
               <p className="font-bold text-[var(--ink-primary)]">
                 {items.length} foto siap diunduh · Hemat {totalStats.savedPct}%
@@ -383,9 +402,9 @@ export default function PhotoCompressorPage() {
               <button
                 type="button"
                 onClick={clearAll}
-                className="btn-secondary text-xs"
+                className="btn-secondary text-xs flex-1 sm:flex-initial"
               >
-                <TrashBinIcon className="w-4 h-4" />
+                <TrashBinIcon className="w-4 h-4 shrink-0" />
                 <span>Bersihkan</span>
               </button>
 
@@ -393,9 +412,9 @@ export default function PhotoCompressorPage() {
                 type="button"
                 disabled={zipping}
                 onClick={() => void downloadAllZip()}
-                className="btn-ledger text-sm"
+                className="btn-ledger text-sm flex-1 sm:flex-initial"
               >
-                <DownloadTrayIcon className="w-4 h-4" />
+                <DownloadTrayIcon className="w-4 h-4 shrink-0" />
                 <span>
                   {zipping
                     ? "Membuat ZIP..."
@@ -424,7 +443,7 @@ export default function PhotoCompressorPage() {
               return (
                 <li
                   key={item.id}
-                  className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-control)] p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3"
+                  className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-control)] p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     <div className="w-14 h-14 shrink-0 rounded-[4px] border border-[var(--border-control)] overflow-hidden bg-white flex items-center justify-center">
@@ -451,7 +470,7 @@ export default function PhotoCompressorPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 ml-auto">
+                  <div className="flex items-center justify-between sm:justify-end gap-2 pt-2.5 sm:pt-0 border-t sm:border-t-0 border-[var(--border-subtle)]">
                     <span
                       className="px-2.5 py-1 rounded-[4px] border text-xs font-mono-tabular font-bold"
                       style={{
@@ -463,23 +482,25 @@ export default function PhotoCompressorPage() {
                       -{savedPct}%
                     </span>
 
-                    <button
-                      type="button"
-                      onClick={() => downloadSingle(item)}
-                      className="btn-secondary !py-1.5 !px-3 text-xs"
-                    >
-                      <DownloadTrayIcon className="w-4 h-4" />
-                      <span>Unduh</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => downloadSingle(item)}
+                        className="btn-secondary !py-1.5 !px-3.5 text-xs"
+                      >
+                        <DownloadTrayIcon className="w-4 h-4 shrink-0" />
+                        <span>Unduh</span>
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => removeOne(item.id)}
-                      aria-label={`Hapus ${item.outputName}`}
-                      className="btn-secondary !p-2.5 min-w-[44px]"
-                    >
-                      <TrashBinIcon className="w-4 h-4" />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => removeOne(item.id)}
+                        aria-label={`Hapus ${item.outputName}`}
+                        className="btn-secondary !p-2.5 min-w-[44px]"
+                      >
+                        <TrashBinIcon className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </li>
               );
@@ -489,7 +510,7 @@ export default function PhotoCompressorPage() {
       )}
 
       {items.length === 0 && !processing && (
-        <div className="flex items-center justify-center gap-2 text-xs sm:text-sm text-[var(--ink-muted)] pt-2">
+        <div className="flex items-center justify-center gap-2 text-xs sm:text-sm text-[var(--ink-muted)] pt-1 text-center">
           <PhotoCompressIcon className="w-4 h-4 shrink-0" />
           <span>Belum ada foto yang dipilih. Unggah foto di atas untuk mulai mengompres.</span>
         </div>

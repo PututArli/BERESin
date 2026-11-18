@@ -2,10 +2,11 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { PdfGridDensity, Project, Receipt } from "@/types/beresin";
 import { formatRupiah, formatShortDateId, todayIsoDate } from "@/lib/format";
+import { sanitizePlainText } from "@/lib/security";
 
 interface LoadedImageInfo {
   dataUrl: string;
-  format: "PNG" | "JPEG";
+  format: "JPEG";
   width: number;
   height: number;
 }
@@ -14,13 +15,13 @@ function sanitizeFileSlug(title: string): string {
   return (
     title
       .toLowerCase()
-      .replace(/\[.*?\]/g, "")
       .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "lpj-beresinhahay"
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "lpj-beresinhahay"
   );
 }
 
-// Re-encode any receipt image onto a JPEG/PNG canvas so WebP/HEIC uploads embed cleanly into jsPDF.
+// Re-encode any receipt image onto a JPEG canvas so WebP/PNG uploads embed cleanly into jsPDF.
 function loadImageForPdf(src: string): Promise<LoadedImageInfo | null> {
   return new Promise((resolve) => {
     if (!src || typeof document === "undefined") {
@@ -28,7 +29,6 @@ function loadImageForPdf(src: string): Promise<LoadedImageInfo | null> {
       return;
     }
     const img = new Image();
-    img.crossOrigin = "anonymous";
     img.onload = () => {
       const w = img.naturalWidth || 600;
       const h = img.naturalHeight || 800;
@@ -72,6 +72,7 @@ export async function exportProjectToPdfLpj(
   const marginX = 14;
   const contentWidth = pageWidth - marginX * 2;
 
+  const safeTitle = sanitizePlainText(project.title, 120) || "Laporan Pengeluaran Kegiatan";
   const totalSpent = receipts.reduce((sum, r) => sum + r.totalAmount, 0);
   const remainingBalance = project.initialBudget - totalSpent;
   const verifiedCount = receipts.filter((r) => r.status === "verified").length;
@@ -84,7 +85,7 @@ export async function exportProjectToPdfLpj(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
   doc.setTextColor(24, 27, 25);
-  doc.text(project.title, marginX, 26);
+  doc.text(safeTitle, marginX, 26);
 
   doc.setDrawColor(22, 66, 49);
   doc.setLineWidth(0.7);
@@ -103,17 +104,7 @@ export async function exportProjectToPdfLpj(
     { align: "right" }
   );
 
-  if (project.isSimulation) {
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(168, 40, 25);
-    doc.text(
-      "CATATAN: Dokumen ini dicetak dari proyek berlabel [DATA SIMULASI].",
-      marginX,
-      43
-    );
-  }
-
-  const summaryStartY = project.isSimulation ? 47 : 42;
+  const summaryStartY = 42;
   autoTable(doc, {
     startY: summaryStartY,
     margin: { left: marginX, right: marginX },
@@ -150,10 +141,10 @@ export async function exportProjectToPdfLpj(
   doc.text("Tabel Rekapitulasi Pengeluaran", marginX, afterSummaryY + 9);
 
   const tableRows = receipts.map((r) => [
-    `#${r.referenceNumber}`,
+    `#${sanitizePlainText(r.referenceNumber, 24)}`,
     formatShortDateId(r.transactionDate),
-    r.merchantName,
-    r.category,
+    sanitizePlainText(r.merchantName, 90),
+    sanitizePlainText(r.category, 40),
     r.status === "verified" ? "Sah" : "Perlu Cek",
     formatRupiah(r.totalAmount),
   ]);
@@ -219,13 +210,13 @@ export async function exportProjectToPdfLpj(
 
   doc.setFont("helvetica", "bold");
   doc.text(
-    project.chairpersonName || "( ........................................ )",
+    sanitizePlainText(project.chairpersonName, 60) || "( ........................................ )",
     leftColCenter,
     sigY + 30,
     { align: "center" }
   );
   doc.text(
-    project.treasurerName || "( ........................................ )",
+    sanitizePlainText(project.treasurerName, 60) || "( ........................................ )",
     rightColCenter,
     sigY + 30,
     { align: "center" }
@@ -258,7 +249,7 @@ export async function exportProjectToPdfLpj(
         doc.setFontSize(11);
         doc.setTextColor(22, 66, 49);
         doc.text(
-          `LAMPIRAN BUKTI NOTA: ${project.title.slice(0, 52)} (Lembar ${attachmentPageNum})`,
+          `LAMPIRAN BUKTI NOTA: ${safeTitle.slice(0, 52)} (Lembar ${attachmentPageNum})`,
           marginX,
           16
         );
@@ -281,8 +272,12 @@ export async function exportProjectToPdfLpj(
       doc.rect(cellX, cellY, cellWidth, headerBarH, "F");
       doc.line(cellX, cellY + headerBarH, cellX + cellWidth, cellY + headerBarH);
 
-      const headerTitle = `[ #${r.referenceNumber} ] - ${formatShortDateId(r.transactionDate)}`;
-      const subHeader = `${r.merchantName.slice(0, 26)} (${formatRupiah(r.totalAmount)})`;
+      const headerTitle = `[ #${sanitizePlainText(r.referenceNumber, 24)} ] - ${formatShortDateId(
+        r.transactionDate
+      )}`;
+      const subHeader = `${sanitizePlainText(r.merchantName, 26)} (${formatRupiah(
+        r.totalAmount
+      )})`;
 
       doc.setFont("helvetica", "bold");
       doc.setFontSize(7.8);
@@ -322,15 +317,15 @@ export async function exportProjectToPdfLpj(
       doc.setFontSize(7);
       doc.setTextColor(82, 91, 85);
       doc.text(
-        `Pos: ${r.category} | Bayar: ${r.paymentMethod} | Status: ${
-          r.status === "verified" ? "Sah" : "Perlu Dicek"
-        }`,
+        `Pos: ${sanitizePlainText(r.category, 24)} | Bayar: ${
+          r.paymentMethod
+        } | Status: ${r.status === "verified" ? "Sah" : "Perlu Dicek"}`,
         cellX + 2.5,
         cellY + cellHeight - 2
       );
     }
   }
 
-  const fileName = `Lampiran-LPJ-${sanitizeFileSlug(project.title)}-${todayIsoDate()}.pdf`;
+  const fileName = `Lampiran-LPJ-${sanitizeFileSlug(safeTitle)}-${todayIsoDate()}.pdf`;
   doc.save(fileName);
 }

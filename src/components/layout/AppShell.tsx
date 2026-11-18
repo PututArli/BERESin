@@ -93,80 +93,117 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </a>
 
       <header className="bg-[var(--bg-surface)] border-b-2 border-[var(--color-ledger)]">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3 sm:gap-5">
-            <Link
-              href="/"
-              className="inline-flex items-center gap-2 min-h-[44px] text-[var(--ink-primary)] no-underline"
-            >
-              <span className="inline-flex items-center justify-center w-8 h-8 rounded-[4px] bg-[var(--color-ledger)] text-[var(--color-ledger-ink)]">
-                <ReceiptSheetIcon className="w-4 h-4" />
-              </span>
-              <span className="font-serif-ledger font-bold text-lg sm:text-xl tracking-tight">
-                BERESinHAHAY
-              </span>
-            </Link>
-
-            <nav aria-label="Menu alat utama" className="flex flex-wrap items-center gap-1.5">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-2.5 space-y-2.5 sm:space-y-0">
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex items-center gap-4 min-w-0">
               <Link
                 href="/"
-                aria-current={pathname === "/" ? "page" : undefined}
-                className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border ${
-                  pathname === "/"
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
-                    : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
-                }`}
+                className="inline-flex items-center gap-2 min-h-[44px] text-[var(--ink-primary)] no-underline shrink-0"
               >
-                <ReceiptSheetIcon className="w-4 h-4" />
-                <span>Rekap Nota</span>
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-[4px] bg-[var(--color-ledger)] text-[var(--color-ledger-ink)]">
+                  <ReceiptSheetIcon className="w-4 h-4" />
+                </span>
+                <span className="font-serif-ledger font-bold text-lg sm:text-xl tracking-tight">
+                  BERESinHAHAY
+                </span>
               </Link>
 
-              <Link
-                href="/kompres"
-                aria-current={pathname.startsWith("/kompres") ? "page" : undefined}
-                className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border ${
-                  pathname.startsWith("/kompres")
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
-                    : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
-                }`}
+              <nav
+                aria-label="Menu alat utama"
+                className="hidden sm:flex items-center gap-2"
               >
-                <PhotoCompressIcon className="w-4 h-4" />
-                <span>Kompres Foto</span>
-              </Link>
-            </nav>
+                <Link
+                  href="/"
+                  aria-current={pathname === "/" ? "page" : undefined}
+                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3.5 rounded-[6px] text-sm font-semibold border ${
+                    pathname === "/"
+                      ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                      : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
+                  }`}
+                >
+                  <ReceiptSheetIcon className="w-4 h-4" />
+                  <span>Rekap Nota</span>
+                </Link>
+
+                <Link
+                  href="/kompres"
+                  aria-current={pathname.startsWith("/kompres") ? "page" : undefined}
+                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3.5 rounded-[6px] text-sm font-semibold border ${
+                    pathname.startsWith("/kompres")
+                      ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                      : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
+                  }`}
+                >
+                  <PhotoCompressIcon className="w-4 h-4" />
+                  <span>Kompres Foto</span>
+                </Link>
+              </nav>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDonateOpen(true)}
+                className="btn-secondary !px-3 text-xs sm:text-sm"
+              >
+                <QrCodeIcon className="w-4 h-4 text-[var(--stamp-accent)]" />
+                <span>Donasi</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setApiDialogOpen(true)}
+                className="btn-secondary !px-3 text-xs sm:text-sm"
+              >
+                <span>Kunci AI</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleTheme}
+                aria-label={
+                  settings.theme === "dark"
+                    ? "Ganti ke tema terang"
+                    : "Ganti ke tema gelap"
+                }
+                className="btn-secondary !px-3 min-w-[44px]"
+              >
+                <ThemeLampIcon isDark={settings.theme === "dark"} />
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setDonateOpen(true)}
-              className="btn-secondary !px-3 text-xs sm:text-sm"
+          {/* Dedicated mobile 2-tab row so primary destinations stay one thumb tap away without crowding */}
+          <nav
+            aria-label="Menu alat seluler"
+            className="sm:hidden grid grid-cols-2 gap-2 pt-1 border-t border-[var(--border-subtle)]"
+          >
+            <Link
+              href="/"
+              aria-current={pathname === "/" ? "page" : undefined}
+              className={`inline-flex items-center justify-center gap-1.5 min-h-[44px] px-2 rounded-[6px] text-xs font-semibold border ${
+                pathname === "/"
+                  ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                  : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)]"
+              }`}
             >
-              <QrCodeIcon className="w-4 h-4 text-[var(--stamp-accent)]" />
-              <span>Donasi</span>
-            </button>
+              <ReceiptSheetIcon className="w-4 h-4 shrink-0" />
+              <span>Rekap Nota</span>
+            </Link>
 
-            <button
-              type="button"
-              onClick={() => setApiDialogOpen(true)}
-              className="btn-secondary !px-3 text-xs sm:text-sm"
+            <Link
+              href="/kompres"
+              aria-current={pathname.startsWith("/kompres") ? "page" : undefined}
+              className={`inline-flex items-center justify-center gap-1.5 min-h-[44px] px-2 rounded-[6px] text-xs font-semibold border ${
+                pathname.startsWith("/kompres")
+                  ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                  : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)]"
+              }`}
             >
-              <span>Kunci AI</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleTheme}
-              aria-label={
-                settings.theme === "dark"
-                  ? "Ganti ke tema terang"
-                  : "Ganti ke tema gelap"
-              }
-              className="btn-secondary !px-3 min-w-[44px]"
-            >
-              <ThemeLampIcon isDark={settings.theme === "dark"} />
-            </button>
-          </div>
+              <PhotoCompressIcon className="w-4 h-4 shrink-0" />
+              <span>Kompres Foto</span>
+            </Link>
+          </nav>
         </div>
       </header>
 
@@ -174,7 +211,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {children}
       </main>
 
-      <footer className="border-t border-[var(--border-control)] bg-[var(--bg-surface)] mt-14">
+      <footer className="border-t border-[var(--border-control)] bg-[var(--bg-surface)] mt-12">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm text-[var(--ink-secondary)]">
           <p>
             <strong className="text-[var(--ink-primary)] font-serif-ledger">
@@ -206,7 +243,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             role="dialog"
             aria-modal="true"
             aria-labelledby="judul-dialog-donasi"
-            className="w-full max-w-sm rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-6 space-y-4"
+            className="w-full max-w-sm max-h-[90dvh] overflow-y-auto rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-5 sm:p-6 space-y-4"
           >
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -237,10 +274,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   alt="Kode QR E-Wallet Donasi BERESinHAHAY"
                   width={220}
                   height={220}
-                  className="mx-auto w-[220px] h-[220px] object-contain rounded-[4px] bg-white p-2 border border-[var(--border-control)]"
+                  className="mx-auto w-[220px] h-[220px] max-w-full object-contain rounded-[4px] bg-white p-2 border border-[var(--border-control)]"
                 />
               ) : (
-                <div className="py-8 px-3 space-y-2">
+                <div className="py-6 px-2 space-y-2">
                   <span className="stamp-ref">[PLACEHOLDER QR E-WALLET]</span>
                   <p className="text-xs sm:text-sm text-[var(--ink-primary)] font-semibold mt-2">
                     Gambar QR E-Wallet belum dipasang
@@ -280,7 +317,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             role="dialog"
             aria-modal="true"
             aria-labelledby="judul-dialog-ai"
-            className="w-full max-w-md rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-6 space-y-4"
+            className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-5 sm:p-6 space-y-4"
           >
             <div className="flex items-start justify-between gap-3">
               <div>

@@ -362,7 +362,7 @@ export function SplitScreenVerifierModal({
         <div
           role="tablist"
           aria-label="Mode tampilan seluler"
-          className="lg:hidden flex border-b border-[var(--border-control)] bg-[var(--bg-paper)] px-3 py-1.5 gap-1.5"
+          className="lg:hidden flex flex-wrap border-b border-[var(--border-control)] bg-[var(--bg-paper)] px-3 py-2 gap-2"
         >
           {[
             { id: "both", label: "Atas-Bawah" },
@@ -438,7 +438,7 @@ export function SplitScreenVerifierModal({
               </div>
 
               {/* Single-pointer pan buttons satisfying WCAG 2.5.7 Dragging Movements */}
-              <div className="flex items-center gap-1" role="group" aria-label="Geser posisi foto tanpa seret">
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Geser posisi foto tanpa seret">
                 <button
                   type="button"
                   onClick={() => setPan((p) => ({ ...p, x: p.x + 40 }))}
@@ -504,8 +504,19 @@ export function SplitScreenVerifierModal({
             className={`${
               mobilePane === "image" ? "hidden lg:flex" : "flex"
             } flex-col lg:min-h-0 lg:overflow-y-auto`}
+            onFocusCapture={(e) => {
+              const target = e.target as HTMLElement | null;
+              if (
+                target &&
+                (target.tagName === "INPUT" ||
+                  target.tagName === "TEXTAREA" ||
+                  target.tagName === "SELECT")
+              ) {
+                target.scrollIntoView({ block: "nearest" });
+              }
+            }}
           >
-            <div className="p-4 sm:p-6 space-y-5 flex-1">
+            <div className="p-4 sm:p-6 pb-10 space-y-5 flex-1">
               {lowConfidence && (
                 <div
                   role="alert"

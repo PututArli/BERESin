@@ -4,7 +4,18 @@ import {
   GEMINI_RESPONSE_SCHEMA,
   RECEIPT_JSON_SCHEMA,
 } from "@/lib/ocr-schema";
-import type { ExtractionMode, OcrExtractedPayload } from "@/types/beresin";
+import {
+  checkRateLimit,
+  getClientIp,
+  isValidSafeImageDataUrl,
+  readBoundedJson,
+  sanitizeMoneyAmount,
+  sanitizePlainText,
+  sanitizeQuantity,
+  sanitizeSafeDate,
+  verifySameOrigin,
+} from "@/lib/security";
+import type { ExtractionMode, OcrExtractedPayload, PaymentMethod } from "@/types/beresin";
 import { todayIsoDate } from "@/lib/format";
 
 interface OcrRequestBody {
@@ -15,42 +26,109 @@ interface OcrRequestBody {
   extractionMode?: ExtractionMode;
 }
 
+const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+const ALLOWED_PAYMENT = new Set<PaymentMethod>([
+  "Tunai",
+  "QRIS",
+  "Transfer",
+  "Kartu",
+  "Lainnya",
+]);
+
 function stripDataUrlPrefix(input: string): string {
   const commaIdx = input.indexOf(",");
   return commaIdx >= 0 ? input.slice(commaIdx + 1) : input;
 }
 
 function inferMerchantFromFilename(fileName: string): string {
-  const withoutExt = fileName.replace(/\.[^.]+$/, "");
+  const safeName = sanitizePlainText(fileName, 120);
+  const withoutExt = safeName.replace(/\.[^.]+$/, "");
   const cleaned = withoutExt
     .replace(/[_-]+/g, " ")
     .replace(/\b(whatsapp|image|img|dsc|foto|nota|struk|\d{6,})\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
-  return cleaned.length >= 3 ? cleaned : "Nota Baru (Klik Cek untuk Isi)";
+  return cleaned.length >= 3 ? cleaned.slice(0, 80) : "Nota Baru (Klik Cek untuk Isi)";
+}
+
+function normalizeOcrOutput(raw: OcrExtractedPayload, fallbackCategory: string): OcrExtractedPayload {
+  const payment =
+    raw.payment_method && ALLOWED_PAYMENT.has(raw.payment_method)
+      ? raw.payment_method
+      : "Tunai";
+
+  return {
+    merchant_name: sanitizePlainText(raw.merchant_name, 160) || "Nota Belanja",
+    transaction_date: sanitizeSafeDate(raw.transaction_date),
+    category: sanitizePlainText(raw.category, 50) || fallbackCategory,
+    payment_method: payment,
+    subtotal: sanitizeMoneyAmount(raw.subtotal),
+    tax_and_service: sanitizeMoneyAmount(raw.tax_and_service),
+    discount: sanitizeMoneyAmount(raw.discount),
+    total_amount: sanitizeMoneyAmount(raw.total_amount),
+    confidence_score: Math.min(1, Math.max(0, Number(raw.confidence_score) || 0.7)),
+    warning_message: raw.warning_message
+      ? sanitizePlainText(raw.warning_message, 300)
+      : null,
+    items: (Array.isArray(raw.items) ? raw.items : []).slice(0, 150).map((it) => ({
+      item_name: sanitizePlainText(it?.item_name, 160) || "Barang",
+      quantity: sanitizeQuantity(it?.quantity ?? 1),
+      unit_price: sanitizeMoneyAmount(it?.unit_price),
+      total_price: sanitizeMoneyAmount(it?.total_price),
+    })),
+  };
 }
 
 export async function POST(request: Request) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Asal permintaan ditolak." }, { status: 403 });
+  }
+
+  const ip = getClientIp(request);
+  if (!checkRateLimit(`ocr-post:${ip}`, 30, 60_000)) {
+    return NextResponse.json(
+      { error: "Batas kecepatan pemindaian tercapai. Tunggu sebentar lalu coba lagi." },
+      { status: 429 }
+    );
+  }
+
+  const parsedReq = await readBoundedJson<OcrRequestBody>(request, 3_600_000);
+  if (!parsedReq.ok) {
+    return NextResponse.json(
+      { error: parsedReq.error },
+      { status: parsedReq.status }
+    );
+  }
+
   try {
-    const body = (await request.json()) as OcrRequestBody;
+    const body = parsedReq.data;
     const rawImage = body.imageBase64 ?? "";
-    if (!rawImage) {
+    if (!isValidSafeImageDataUrl(rawImage)) {
       return NextResponse.json(
-        { error: "Data gambar nota tidak ditemukan." },
+        { error: "Data gambar nota tidak valid atau format tidak didukung." },
         { status: 400 }
       );
     }
 
-    const mimeType = body.mimeType || "image/jpeg";
+    const requestedMime = sanitizePlainText(body.mimeType ?? "image/jpeg", 32).toLowerCase();
+    const mimeType = ALLOWED_MIME.has(requestedMime) ? requestedMime : "image/jpeg";
+
     const categories =
       Array.isArray(body.categories) && body.categories.length > 0
         ? body.categories
+            .map((c) => sanitizePlainText(c, 50))
+            .filter(Boolean)
+            .slice(0, 20)
         : ["Konsumsi", "Perlengkapan", "Transportasi", "Acara", "Lain-lain"];
+
     const extractionMode: ExtractionMode =
       body.extractionMode === "summary" ? "summary" : "detailed";
 
-    const headerGeminiKey = request.headers.get("x-gemini-api-key")?.trim() || "";
-    const geminiKey = process.env.GEMINI_API_KEY?.trim() || headerGeminiKey;
+    const rawHeaderKey = request.headers.get("x-gemini-api-key")?.trim() || "";
+    const validHeaderKey = /^[A-Za-z0-9_-]{20,120}$/.test(rawHeaderKey)
+      ? rawHeaderKey
+      : "";
+    const geminiKey = process.env.GEMINI_API_KEY?.trim() || validHeaderKey;
     const openaiKey = process.env.OPENAI_API_KEY?.trim() || "";
 
     const currentYear = new Date().getFullYear();
@@ -99,9 +177,7 @@ export async function POST(request: Request) {
 
       if (!geminiResp.ok) {
         return NextResponse.json(
-          {
-            error: `Layanan Gemini Vision mengembalikan kode ${geminiResp.status}.`,
-          },
+          { error: "Layanan pembaca AI sedang sibuk atau kunci API tidak sesuai." },
           { status: 502 }
         );
       }
@@ -117,7 +193,10 @@ export async function POST(request: Request) {
         );
       }
 
-      const parsed = JSON.parse(rawText) as OcrExtractedPayload;
+      const parsed = normalizeOcrOutput(
+        JSON.parse(rawText) as OcrExtractedPayload,
+        categories[0] ?? "Lain-lain"
+      );
       return NextResponse.json({
         aiUsed: true,
         provider: "gemini-2.5-flash",
@@ -166,9 +245,7 @@ export async function POST(request: Request) {
 
       if (!openaiResp.ok) {
         return NextResponse.json(
-          {
-            error: `Layanan OpenAI Vision mengembalikan kode ${openaiResp.status}.`,
-          },
+          { error: "Layanan pembaca AI sedang tidak dapat dihubungi." },
           { status: 502 }
         );
       }
@@ -179,12 +256,15 @@ export async function POST(request: Request) {
 
       if (!content) {
         return NextResponse.json(
-          { error: "Respons OpenAI Vision kosong." },
+          { error: "Respons pembaca AI kosong." },
           { status: 502 }
         );
       }
 
-      const parsed = JSON.parse(content) as OcrExtractedPayload;
+      const parsed = normalizeOcrOutput(
+        JSON.parse(content) as OcrExtractedPayload,
+        categories[0] ?? "Lain-lain"
+      );
       return NextResponse.json({
         aiUsed: true,
         provider: "gpt-4o-mini",
@@ -204,7 +284,7 @@ export async function POST(request: Request) {
       total_amount: 0,
       confidence_score: 0.5,
       warning_message:
-        "Kunci AI belum diisi. Klik Cek / Edit untuk melengkapi nominal, atau tempel kunci Gemini gratis di tombol Kunci AI pada bagian atas.",
+        "Kunci AI belum diisi. Klik Cek / Edit untuk melengkapi nominal, atau tempel kunci Gemini di menu Kunci AI pada bagian atas.",
       items: [
         {
           item_name: "Belanja sesuai foto struk",
@@ -220,9 +300,10 @@ export async function POST(request: Request) {
       provider: "manual-local",
       data: fallbackPayload,
     });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Gagal memproses gambar nota.";
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch {
+    return NextResponse.json(
+      { error: "Gagal memproses gambar nota." },
+      { status: 500 }
+    );
   }
 }

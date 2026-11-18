@@ -14,7 +14,6 @@ export interface Project {
   chairpersonName: string;
   treasurerName: string;
   categories: string[];
-  isSimulation?: boolean;
   createdAt: string;
 }
 
@@ -46,7 +45,6 @@ export interface Receipt {
   warningMessage: string | null;
   isDuplicate: boolean;
   duplicateOfRef: string | null;
-  isSimulation?: boolean;
   status: ReceiptStatus;
   notes: string;
   items: ReceiptItem[];

@@ -1,14 +1,15 @@
 import * as XLSX from "xlsx";
 import type { Project, Receipt } from "@/types/beresin";
 import { formatShortDateId, todayIsoDate } from "@/lib/format";
+import { sanitizeSpreadsheetCell } from "@/lib/security";
 
 function sanitizeFileSlug(title: string): string {
   return (
     title
       .toLowerCase()
-      .replace(/\[.*?\]/g, "")
       .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "lpj-beresinhahay"
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "lpj-beresinhahay"
   );
 }
 
@@ -33,10 +34,9 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
 
   const summaryRows: Array<Array<string | number>> = [
     ["LAPORAN PERTANGGUNGJAWABAN KEUANGAN (BERESinHAHAY)"],
-    ["Nama Proyek / Kegiatan", project.title],
-    ["Deskripsi", project.description || "-"],
-    ["Ketua Pelaksana", project.chairpersonName || "-"],
-    ["Bendahara", project.treasurerName || "-"],
+    ["Nama Laporan / Kegiatan", sanitizeSpreadsheetCell(project.title)],
+    ["Ketua Pelaksana", sanitizeSpreadsheetCell(project.chairpersonName || "-")],
+    ["Bendahara", sanitizeSpreadsheetCell(project.treasurerName || "-")],
     ["Tanggal Unduh", formatShortDateId(todayIsoDate())],
     [],
     ["RINGKASAN NERACA DANA"],
@@ -51,7 +51,7 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
 
   for (const [catName, stat] of categoryTotals.entries()) {
     const pct = totalSpent > 0 ? Number(((stat.amount / totalSpent) * 100).toFixed(1)) : 0;
-    summaryRows.push([catName, stat.count, stat.amount, pct]);
+    summaryRows.push([sanitizeSpreadsheetCell(catName), stat.count, stat.amount, pct]);
   }
   summaryRows.push(["TOTAL KESELURUHAN", receipts.length, totalSpent, totalSpent > 0 ? 100 : 0]);
 
@@ -85,18 +85,20 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
         ? "Memproses"
         : "Gagal";
     receiptRows.push([
-      r.referenceNumber,
-      r.transactionDate ?? "-",
-      r.merchantName,
-      r.category,
-      r.paymentMethod,
+      sanitizeSpreadsheetCell(r.referenceNumber),
+      sanitizeSpreadsheetCell(r.transactionDate ?? "-"),
+      sanitizeSpreadsheetCell(r.merchantName),
+      sanitizeSpreadsheetCell(r.category),
+      sanitizeSpreadsheetCell(r.paymentMethod),
       r.subtotal,
       r.taxAndService,
       r.discount,
       r.totalAmount,
       statusLabel,
-      r.isDuplicate ? `Cek kesamaan dgn ${r.duplicateOfRef ?? "nota lain"}` : "-",
-      r.notes || "-",
+      r.isDuplicate
+        ? sanitizeSpreadsheetCell(`Cek kesamaan dgn ${r.duplicateOfRef ?? "nota lain"}`)
+        : "-",
+      sanitizeSpreadsheetCell(r.notes || "-"),
     ]);
   }
   receiptRows.push([
@@ -147,10 +149,10 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
   for (const r of receipts) {
     if (r.items.length === 0) {
       itemRows.push([
-        r.referenceNumber,
-        r.transactionDate ?? "-",
-        r.merchantName,
-        r.category,
+        sanitizeSpreadsheetCell(r.referenceNumber),
+        sanitizeSpreadsheetCell(r.transactionDate ?? "-"),
+        sanitizeSpreadsheetCell(r.merchantName),
+        sanitizeSpreadsheetCell(r.category),
         "(Rekap langsung tanpa rincian baris)",
         1,
         r.totalAmount,
@@ -160,11 +162,11 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
     }
     for (const item of r.items) {
       itemRows.push([
-        r.referenceNumber,
-        r.transactionDate ?? "-",
-        r.merchantName,
-        r.category,
-        item.itemName,
+        sanitizeSpreadsheetCell(r.referenceNumber),
+        sanitizeSpreadsheetCell(r.transactionDate ?? "-"),
+        sanitizeSpreadsheetCell(r.merchantName),
+        sanitizeSpreadsheetCell(r.category),
+        sanitizeSpreadsheetCell(item.itemName),
         item.quantity,
         item.unitPrice,
         item.totalPrice,

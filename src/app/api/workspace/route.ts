@@ -1,5 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
+import {
+  checkRateLimit,
+  getClientIp,
+  isValidWorkspaceId,
+  readBoundedJson,
+  sanitizeMoneyAmount,
+  sanitizePlainText,
+  verifySameOrigin,
+} from "@/lib/security";
 import type { Project, Receipt, ReceiptItem } from "@/types/beresin";
 
 const DEFAULT_CATEGORIES = [
@@ -10,25 +19,29 @@ const DEFAULT_CATEGORIES = [
   "Lain-lain",
 ];
 
-function sanitizeWorkspaceId(raw: string | null): string {
-  const cleaned = (raw ?? "").trim().replace(/[^a-zA-Z0-9_-]/g, "");
-  return cleaned.slice(0, 80);
-}
-
 export async function GET(request: Request) {
+  const ip = getClientIp(request);
+  if (!checkRateLimit(`ws-get:${ip}`, 90, 60_000)) {
+    return NextResponse.json(
+      { error: "Terlalu banyak permintaan. Coba lagi sebentar." },
+      { status: 429 }
+    );
+  }
+
   const sql = getSql();
   if (!sql) {
     return NextResponse.json({ cloudEnabled: false }, { status: 200 });
   }
 
   const { searchParams } = new URL(request.url);
-  const workspaceId = sanitizeWorkspaceId(searchParams.get("workspaceId"));
-  if (!workspaceId) {
+  const rawWsId = searchParams.get("workspaceId");
+  if (!isValidWorkspaceId(rawWsId)) {
     return NextResponse.json(
-      { error: "Parameter workspaceId diperlukan." },
+      { error: "Identitas ruang kerja tidak valid." },
       { status: 400 }
     );
   }
+  const workspaceId = rawWsId.trim();
 
   try {
     await sql`
@@ -50,20 +63,26 @@ export async function GET(request: Request) {
         id, workspace_id, reference_number, image_url, image_hash, extraction_mode,
         merchant_name, transaction_date, category, subtotal, tax_and_service,
         discount, total_amount, payment_method, confidence_score, warning_message,
-        is_duplicate, duplicate_of_ref, is_simulation, status, notes, items, created_at
+        is_duplicate, duplicate_of_ref, status, notes, items, created_at
       FROM receipts
       WHERE workspace_id = ${workspaceId}
       ORDER BY reference_number ASC
+      LIMIT 500
     `;
 
     const project: Project = {
-      id: ws.id,
-      title: ws.report_title || "Laporan Pengeluaran Kegiatan",
+      id: String(ws.id),
+      title: sanitizePlainText(ws.report_title, 160) || "Laporan Pengeluaran Kegiatan",
       description: "",
-      initialBudget: Number(ws.initial_budget) || 0,
-      chairpersonName: ws.chairperson_name || "",
-      treasurerName: ws.treasurer_name || "",
-      categories: Array.isArray(ws.categories) ? ws.categories : DEFAULT_CATEGORIES,
+      initialBudget: sanitizeMoneyAmount(ws.initial_budget),
+      chairpersonName: sanitizePlainText(ws.chairperson_name, 120),
+      treasurerName: sanitizePlainText(ws.treasurer_name, 120),
+      categories: Array.isArray(ws.categories)
+        ? ws.categories
+            .map((c: unknown) => sanitizePlainText(c, 50))
+            .filter(Boolean)
+            .slice(0, 20)
+        : DEFAULT_CATEGORIES,
       createdAt:
         ws.created_at instanceof Date
           ? ws.created_at.toISOString()
@@ -73,29 +92,32 @@ export async function GET(request: Request) {
     const receipts: Receipt[] = receiptRows.map((r) => ({
       id: String(r.id),
       projectId: String(r.workspace_id),
-      referenceNumber: String(r.reference_number),
+      referenceNumber: sanitizePlainText(r.reference_number, 24),
       imageUrl: String(r.image_url),
-      imageHash: String(r.image_hash ?? ""),
+      imageHash: sanitizePlainText(r.image_hash ?? "", 128),
       extractionMode: r.extraction_mode === "summary" ? "summary" : "detailed",
-      merchantName: String(r.merchant_name ?? ""),
+      merchantName: sanitizePlainText(r.merchant_name, 160),
       transactionDate: r.transaction_date
         ? r.transaction_date instanceof Date
           ? r.transaction_date.toISOString().slice(0, 10)
           : String(r.transaction_date).slice(0, 10)
         : null,
-      category: String(r.category ?? "Lain-lain"),
-      subtotal: Number(r.subtotal) || 0,
-      taxAndService: Number(r.tax_and_service) || 0,
-      discount: Number(r.discount) || 0,
-      totalAmount: Number(r.total_amount) || 0,
+      category: sanitizePlainText(r.category ?? "Lain-lain", 50) || "Lain-lain",
+      subtotal: sanitizeMoneyAmount(r.subtotal),
+      taxAndService: sanitizeMoneyAmount(r.tax_and_service),
+      discount: sanitizeMoneyAmount(r.discount),
+      totalAmount: sanitizeMoneyAmount(r.total_amount),
       paymentMethod: r.payment_method ?? "Tunai",
-      confidenceScore: Number(r.confidence_score) || 1,
-      warningMessage: r.warning_message ? String(r.warning_message) : null,
+      confidenceScore: Math.min(1, Math.max(0, Number(r.confidence_score) || 1)),
+      warningMessage: r.warning_message
+        ? sanitizePlainText(r.warning_message, 300)
+        : null,
       isDuplicate: Boolean(r.is_duplicate),
-      duplicateOfRef: r.duplicate_of_ref ? String(r.duplicate_of_ref) : null,
-      isSimulation: Boolean(r.is_simulation),
+      duplicateOfRef: r.duplicate_of_ref
+        ? sanitizePlainText(r.duplicate_of_ref, 24)
+        : null,
       status: r.status ?? "needs_review",
-      notes: String(r.notes ?? ""),
+      notes: sanitizePlainText(r.notes ?? "", 500),
       items: Array.isArray(r.items) ? (r.items as ReceiptItem[]) : [],
       createdAt:
         r.created_at instanceof Date
@@ -108,44 +130,60 @@ export async function GET(request: Request) {
       project,
       receipts,
     });
-  } catch (err) {
-    return NextResponse.json(
-      {
-        cloudEnabled: false,
-        error: err instanceof Error ? err.message : "Gagal membaca database.",
-      },
-      { status: 200 }
-    );
+  } catch {
+    return NextResponse.json({ cloudEnabled: false }, { status: 200 });
   }
 }
 
 export async function PUT(request: Request) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Asal permintaan ditolak." }, { status: 403 });
+  }
+
+  const ip = getClientIp(request);
+  if (!checkRateLimit(`ws-put:${ip}`, 60, 60_000)) {
+    return NextResponse.json(
+      { error: "Terlalu banyak permintaan. Coba lagi sebentar." },
+      { status: 429 }
+    );
+  }
+
   const sql = getSql();
   if (!sql) {
     return NextResponse.json({ cloudEnabled: false }, { status: 200 });
   }
 
+  const parsed = await readBoundedJson<
+    Partial<Project> & { workspaceId?: string }
+  >(request, 64_000);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+  }
+
+  const body = parsed.data;
+  const rawWsId = body.workspaceId ?? body.id;
+  if (!isValidWorkspaceId(rawWsId)) {
+    return NextResponse.json(
+      { error: "Identitas ruang kerja tidak valid." },
+      { status: 400 }
+    );
+  }
+  const workspaceId = rawWsId.trim();
+
+  const title =
+    sanitizePlainText(body.title, 160) || "Laporan Pengeluaran Kegiatan";
+  const chairperson = sanitizePlainText(body.chairpersonName, 120);
+  const treasurer = sanitizePlainText(body.treasurerName, 120);
+  const initialBudget = sanitizeMoneyAmount(body.initialBudget);
+  const categories =
+    Array.isArray(body.categories) && body.categories.length > 0
+      ? body.categories
+          .map((c) => sanitizePlainText(c, 50))
+          .filter(Boolean)
+          .slice(0, 20)
+      : DEFAULT_CATEGORIES;
+
   try {
-    const body = (await request.json()) as Partial<Project> & {
-      workspaceId?: string;
-    };
-    const workspaceId = sanitizeWorkspaceId(body.workspaceId ?? body.id ?? "");
-    if (!workspaceId) {
-      return NextResponse.json(
-        { error: "Parameter workspaceId diperlukan." },
-        { status: 400 }
-      );
-    }
-
-    const title = (body.title ?? "Laporan Pengeluaran Kegiatan").trim();
-    const chairperson = (body.chairpersonName ?? "").trim();
-    const treasurer = (body.treasurerName ?? "").trim();
-    const initialBudget = Math.max(0, Math.round(Number(body.initialBudget) || 0));
-    const categories =
-      Array.isArray(body.categories) && body.categories.length > 0
-        ? body.categories
-        : DEFAULT_CATEGORIES;
-
     await sql`
       INSERT INTO workspaces (
         id, report_title, chairperson_name, treasurer_name, initial_budget, categories, updated_at
@@ -169,12 +207,9 @@ export async function PUT(request: Request) {
     `;
 
     return NextResponse.json({ ok: true, cloudEnabled: true });
-  } catch (err) {
+  } catch {
     return NextResponse.json(
-      {
-        ok: false,
-        error: err instanceof Error ? err.message : "Gagal menyimpan laporan.",
-      },
+      { ok: false, error: "Penyimpanan laporan sementara tidak tersedia." },
       { status: 500 }
     );
   }
