@@ -228,7 +228,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {donateOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4"
           style={{ backgroundColor: "var(--modal-scrim)" }}
           onClick={(e) => {
             if (e.target === e.currentTarget) setDonateOpen(false);
@@ -239,13 +239,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             role="dialog"
             aria-modal="true"
             aria-labelledby="judul-dialog-donasi"
-            className="w-full max-w-sm max-h-[90dvh] overflow-y-auto rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-5 sm:p-6 space-y-4"
+            className="w-full max-w-sm max-h-[92dvh] overflow-y-auto rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-control)] shadow-2xl p-4 sm:p-6 space-y-3.5"
           >
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start justify-between gap-2.5">
               <div>
                 <h2
                   id="judul-dialog-donasi"
-                  className="font-serif-ledger font-bold text-xl text-[var(--ink-primary)]"
+                  className="font-serif-ledger font-bold text-lg sm:text-xl text-[var(--ink-primary)]"
                 >
                   Dukung BERESin
                 </h2>
@@ -257,32 +257,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 type="button"
                 onClick={() => setDonateOpen(false)}
                 aria-label="Tutup jendela donasi"
-                className="btn-secondary !p-2 min-w-[44px]"
+                className="btn-secondary !p-2 min-w-[44px] shrink-0"
               >
                 <CloseXIcon />
               </button>
             </div>
 
-            <div className="p-3 sm:p-4 rounded-[8px] bg-[var(--bg-paper)] border border-[var(--border-card)] text-center space-y-2.5">
+            <div className="p-3 rounded-[8px] bg-[var(--bg-paper)] border border-[var(--border-card)] text-center space-y-2">
               <img
-                src="/qr-donasi.jpeg"
-                alt="Kode QRIS Donasi BERESin (NMID ID1026641946102)"
+                src="/qris-beresin.jpeg"
+                alt="Kode QRIS Donasi BERESin, Service (NMID ID1026641946102)"
                 width={1136}
                 height={1600}
                 loading="eager"
                 decoding="async"
-                className="mx-auto w-full max-w-[256px] sm:max-w-[280px] h-auto rounded-[6px] bg-white p-1.5 border border-[var(--border-control)]"
+                className="mx-auto w-full max-w-[236px] sm:max-w-[272px] h-auto rounded-[6px] bg-white p-1.5 border border-[var(--border-card)]"
               />
               <p className="text-xs text-[var(--ink-secondary)] font-mono-tabular">
-                NMID: ID1026641946102 · Bisa semua e-wallet &amp; m-banking
+                BERESin, Service · NMID: ID1026641946102
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-2.5">
               <a
-                href="/qr-donasi.jpeg"
-                download="QRIS-Donasi-BERESin.jpeg"
-                className="btn-secondary w-full no-underline"
+                href="/qris-beresin.jpeg"
+                download="QRIS-BERESin.jpeg"
+                className="btn-secondary w-full no-underline text-xs sm:text-sm"
               >
                 <DownloadTrayIcon className="w-4 h-4 shrink-0" />
                 <span>Simpan QRIS</span>
@@ -290,7 +290,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <button
                 type="button"
                 onClick={() => setDonateOpen(false)}
-                className="btn-ledger w-full"
+                className="btn-ledger w-full text-xs sm:text-sm"
               >
                 Tutup
               </button>

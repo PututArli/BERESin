@@ -6,7 +6,7 @@ Reading this as: Aplikasi web penyusun laporan keuangan LPJ otomatis dari foto s
 ## Resolusi Aturan R-37 & R-23
 1. **Ikon Garis Kuitansi Kustom (R-04)**: Memakai ikon SVG bergaris tegas (`strokeWidth="2"`, sudut `square`/`miter`) hanya pada tombol aksi agar mudah dikenali fungsinya.
 2. **Tanpa Data Contoh Palsu (R-38)**: Layar awal langsung menampilkan kotak unggah bersih tanpa data simulasi agar pengguna tidak bingung.
-3. **QRIS Donasi Asli (`public/qr-donasi.jpeg`)**: Menampilkan gambar QRIS resmi pemilik proyek dengan bingkai putih berdimensi intrinsik penuh (`1136x1600`) sehingga tetap mudah dipindai kamera di mode terang maupun gelap.
+3. **QRIS Donasi Asli (`public/qris-beresin.jpeg`)**: Menampilkan gambar QRIS resmi `BERESin, Service` dengan bingkai putih berdimensi intrinsik penuh (`1136x1600`) sehingga tetap mudah dipindai kamera di mode terang maupun gelap.
 
 ## Jiwa & Karakter Produk
 BERESin membuang keramaian dashboard berlapis dan istilah teknis mesin. Begitu pengguna membuka halaman, mereka langsung mengerti fungsinya: pilih foto struk, cek sebentar jika ada tulisan buram, lalu unduh laporan LPJ yang kalimat pengantar, tabel dana, tanda tangan, dan lampiran fotonya sudah tersusun otomatis dalam berbagai format file (`.pdf`, `.docx`, `.xlsx`, `.csv`, `.html`, `.txt`).
