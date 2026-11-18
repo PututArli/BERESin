@@ -78,6 +78,7 @@ export interface AppSettings {
 
 export interface CompressedPhotoItem {
   id: string;
+  sourceFile?: File;
   originalName: string;
   outputName: string;
   originalBytes: number;

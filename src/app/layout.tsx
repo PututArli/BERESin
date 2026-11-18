@@ -27,11 +27,11 @@ function resolveSafeSiteUrl(): URL {
 export const metadata: Metadata = {
   metadataBase: resolveSafeSiteUrl(),
   title: {
-    default: "BERESinHAHAY | Foto Nota ke Excel & PDF + Kompres Foto",
-    template: "%s | BERESinHAHAY",
+    default: "BERESin | Ubah Foto Struk Jadi Laporan LPJ & Kompres Foto",
+    template: "%s | BERESin",
   },
   description:
-    "Unggah foto struk atau nota warung sebanyak apa pun tanpa batas kuota, lalu langsung unduh rekap Excel dan lampiran PDF A4. Dilengkapi fitur kompres foto.",
+    "Ubah foto struk belanja atau nota warung menjadi laporan LPJ otomatis dalam format PDF, Word, Excel, CSV, dan HTML, dilengkapi fitur pengecil ukuran banyak foto.",
   alternates: {
     canonical: "/",
   },
@@ -42,6 +42,8 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+const themeInitScript = `try{var t=localStorage.getItem("beresin_theme");if(t==="dark"||t==="light"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -49,6 +51,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="id" data-theme="light" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body>
         <LedgerProvider>
           <AppShell>{children}</AppShell>

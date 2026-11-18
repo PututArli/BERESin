@@ -323,10 +323,10 @@ export function SplitScreenVerifierModal({
                 id="judul-modal-verifikasi"
                 className="font-serif-ledger font-bold text-lg leading-tight text-[var(--ink-primary)]"
               >
-                Periksa &amp; Sahkan Bukti Nota
+                Cek Kesesuaian Foto Struk &amp; Angka
               </h2>
               <p className="text-xs text-[var(--ink-secondary)]">
-                Nota {activeIndex + 1} dari {receipts.length} pada proyek {project.title}
+                Nota ke-{activeIndex + 1} dari {receipts.length} · {project.title}
               </p>
             </div>
           </div>
@@ -529,13 +529,10 @@ export function SplitScreenVerifierModal({
                 >
                   <AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
                   <div className="text-sm">
-                    <p className="font-bold">
-                      Perlu Pemeriksaan Bendahara (Keyakinan Bacaan:{" "}
-                      {Math.round(receipt.confidenceScore * 100)}%)
-                    </p>
+                    <p className="font-bold">Mohon cek kembali angkanya</p>
                     <p className="mt-0.5">
                       {receipt.warningMessage ??
-                        "Sebagian teks pada struk kurang jelas. Pastikan tanggal dan total akhir sesuai dengan foto."}
+                        "Beberapa tulisan di foto struk kurang jelas. Pastikan tanggal dan total belanja sudah sesuai dengan foto."}
                     </p>
                   </div>
                 </div>
@@ -653,7 +650,7 @@ export function SplitScreenVerifierModal({
                     htmlFor="edit-category"
                     className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
                   >
-                    Kategori / Pos Anggaran
+                    Kategori Pengeluaran
                   </label>
                   <select
                     id="edit-category"
@@ -673,7 +670,7 @@ export function SplitScreenVerifierModal({
               <div className="pt-2 border-t border-[var(--border-subtle)]">
                 <div className="flex items-center justify-between gap-2 mb-3">
                   <h3 className="font-serif-ledger font-bold text-base text-[var(--ink-primary)]">
-                    Rincian Barang pada Nota
+                    Daftar Barang yang Dibeli
                   </h3>
                   <button
                     type="button"
@@ -681,7 +678,7 @@ export function SplitScreenVerifierModal({
                     className="btn-secondary !py-1.5 !px-3 text-xs"
                   >
                     <PlusBoxIcon className="w-4 h-4" />
-                    <span>Tambah Baris</span>
+                    <span>Tambah Barang</span>
                   </button>
                 </div>
 
@@ -689,7 +686,7 @@ export function SplitScreenVerifierModal({
                   {items.map((item, idx) => (
                     <div
                       key={item.id}
-                      className="p-3 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-control)] grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end"
+                      className="p-3 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end"
                     >
                       <div className="sm:col-span-5">
                         <label
@@ -838,7 +835,6 @@ export function SplitScreenVerifierModal({
                 </div>
               </div>
 
-              {/* Kalkulator Selisih Otomatis (PRD Bagian 6.2) */}
               <div
                 className="rounded-[6px] p-3.5 border-2"
                 style={
@@ -895,20 +891,20 @@ export function SplitScreenVerifierModal({
                   htmlFor="edit-notes"
                   className="block text-sm font-semibold text-[var(--ink-primary)] mb-1"
                 >
-                  Catatan Tambahan Bendahara (Opsional)
+                  Catatan Tambahan (Opsional)
                 </label>
                 <textarea
                   id="edit-notes"
                   rows={2}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Contoh: Konsumsi rapat koordinasi seksi acara"
+                  placeholder="Contoh: Konsumsi rapat panitia hari pertama"
                   className="input-ledger !min-h-[68px]"
                 />
               </div>
             </div>
 
-            <div className="sticky bottom-0 z-10 px-4 py-3 bg-[var(--bg-subtle)] border-t border-[var(--border-control)] flex flex-wrap items-center justify-between gap-2.5">
+            <div className="sticky bottom-0 z-10 px-4 py-3 bg-[var(--bg-subtle)] border-t border-[var(--border-card)] flex flex-wrap items-center justify-between gap-2.5">
               <button
                 type="button"
                 onClick={() => onDeleteReceipt(receipt.id)}
@@ -923,18 +919,21 @@ export function SplitScreenVerifierModal({
                   type="button"
                   disabled={saving}
                   onClick={handleSaveDraft}
-                  className="btn-secondary text-sm"
+                  className="btn-secondary text-xs sm:text-sm"
                 >
-                  Simpan Draf
+                  Simpan Dulu
                 </button>
                 <button
                   type="button"
                   disabled={saving}
                   onClick={() => void handleConfirmVerified(true)}
-                  className="btn-stamp text-sm"
+                  className="btn-stamp text-xs sm:text-sm"
                 >
-                  <StampCheckIcon className="w-4 h-4" />
-                  <span>Tandai Sah &amp; Lanjut (Ctrl+Enter)</span>
+                  <StampCheckIcon className="w-4 h-4 shrink-0" />
+                  <span>
+                    Sudah Pas &amp; Lanjut{" "}
+                    <span className="hidden sm:inline">(Ctrl+Enter)</span>
+                  </span>
                 </button>
               </div>
             </div>

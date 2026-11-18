@@ -1,8 +1,8 @@
 {
-  "name": "beresinhahay",
-  "version": "1.1.0",
+  "name": "beresin",
+  "version": "1.2.0",
   "private": true,
-  "description": "BERESinHAHAY: Rekap foto nota ke Excel & PDF LPJ tanpa batas kuota, dilengkapi alat kompresi foto instan di peramban.",
+  "description": "BERESin: Ubah foto struk menjadi laporan LPJ otomatis (PDF, Word, Excel, CSV, HTML) dan kecilkan ukuran banyak foto sekaligus.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

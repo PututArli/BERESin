@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import imageCompression from "browser-image-compression";
 import type {
   ExtractionMode,
@@ -12,32 +13,44 @@ import type {
 import {
   clearAllWorkspaceReceipts,
   deleteReceipt,
-  loadActiveWorkspace,
+  loadLocalWorkspaceFast,
   nextReferenceNumber,
   saveReceipt,
+  syncWorkspaceFromCloud,
   updateWorkspaceMeta,
 } from "@/lib/storage";
 import {
   computeBlobHash,
+  findDuplicateReceipt,
   formatRupiah,
   formatShortDateId,
   parseIndonesianMoneyInput,
   todayIsoDate,
 } from "@/lib/format";
+import { computeLpjNarrative } from "@/lib/lpj-narrative";
 import { verifyImageMagicBytes } from "@/lib/security";
 import { createManualNoteDataUrl } from "@/lib/manual-note-image";
 import { exportProjectToExcel } from "@/lib/export-excel";
 import { exportProjectToPdfLpj } from "@/lib/export-pdf";
+import {
+  exportProjectToCsv,
+  exportProjectToDocx,
+  exportProjectToHtml,
+  exportProjectToTxt,
+} from "@/lib/export-multi";
 import { useLedger } from "@/components/providers/LedgerProvider";
 import { SplitScreenVerifierModal } from "@/components/receipts/SplitScreenVerifierModal";
 import {
   AlertTriangleIcon,
+  BookGuideIcon,
+  DownloadTrayIcon,
   PdfDocumentIcon,
   PlusBoxIcon,
   SpreadsheetIcon,
   StampCheckIcon,
   TrashBinIcon,
   UploadStackIcon,
+  WordDocumentIcon,
 } from "@/components/icons/LedgerIcons";
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -63,7 +76,7 @@ export default function HomePage() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState("");
-  const [exportingPdf, setExportingPdf] = useState(false);
+  const [busyExport, setBusyExport] = useState<"pdf" | "docx" | null>(null);
 
   const [titleInput, setTitleInput] = useState("Laporan Pengeluaran Kegiatan");
   const [budgetInput, setBudgetInput] = useState("");
@@ -73,25 +86,42 @@ export default function HomePage() {
   const [activeReceiptId, setActiveReceiptId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const userMutatedRef = useRef(false);
 
   const loadData = useCallback(async () => {
-    setViewState("loading");
     setErrorText("");
     try {
-      const data = await loadActiveWorkspace();
-      setProject(data.project);
-      setReceipts(data.receipts);
-      setCloudConnected(data.cloudConnected);
-      setTitleInput(data.project.title);
+      const localData = await loadLocalWorkspaceFast();
+      setProject(localData.project);
+      setReceipts(localData.receipts);
+      setTitleInput(localData.project.title);
       setBudgetInput(
-        data.project.initialBudget > 0 ? String(data.project.initialBudget) : ""
+        localData.project.initialBudget > 0
+          ? String(localData.project.initialBudget)
+          : ""
       );
-      setChairpersonInput(data.project.chairpersonName || "");
-      setTreasurerInput(data.project.treasurerName || "");
+      setChairpersonInput(localData.project.chairpersonName || "");
+      setTreasurerInput(localData.project.treasurerName || "");
       setViewState("ready");
+
+      // Reconcile with Supabase in background without delaying initial render or clicks.
+      void syncWorkspaceFromCloud().then((cloudData) => {
+        if (!cloudData || userMutatedRef.current) return;
+        setCloudConnected(cloudData.cloudConnected);
+        setProject(cloudData.project);
+        setReceipts(cloudData.receipts);
+        setTitleInput(cloudData.project.title);
+        setBudgetInput(
+          cloudData.project.initialBudget > 0
+            ? String(cloudData.project.initialBudget)
+            : ""
+        );
+        setChairpersonInput(cloudData.project.chairpersonName || "");
+        setTreasurerInput(cloudData.project.treasurerName || "");
+      });
     } catch (err) {
       setErrorText(
-        err instanceof Error ? err.message : "Gagal memuat ruang kerja nota."
+        err instanceof Error ? err.message : "Gagal memuat daftar nota di peramban."
       );
       setViewState("error");
     }
@@ -100,6 +130,22 @@ export default function HomePage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const liveProject = useMemo<Project | null>(() => {
+    if (!project) return null;
+    return {
+      ...project,
+      title: titleInput.trim() || "Laporan Pengeluaran Kegiatan",
+      initialBudget: parseIndonesianMoneyInput(budgetInput),
+      chairpersonName: chairpersonInput.trim(),
+      treasurerName: treasurerInput.trim(),
+    };
+  }, [project, titleInput, budgetInput, chairpersonInput, treasurerInput]);
+
+  const narrative = useMemo(
+    () => (liveProject ? computeLpjNarrative(liveProject, receipts) : null),
+    [liveProject, receipts]
+  );
 
   const totalSpent = useMemo(
     () => receipts.reduce((sum, r) => sum + r.totalAmount, 0),
@@ -111,19 +157,12 @@ export default function HomePage() {
     [receipts]
   );
 
-  async function persistHeaderMeta(overrides?: Partial<Project>): Promise<Project | null> {
-    if (!project) return null;
-    const updated: Project = {
-      ...project,
-      title: titleInput.trim() || "Laporan Pengeluaran Kegiatan",
-      initialBudget: parseIndonesianMoneyInput(budgetInput),
-      chairpersonName: chairpersonInput.trim(),
-      treasurerName: treasurerInput.trim(),
-      ...overrides,
-    };
-    setProject(updated);
-    await updateWorkspaceMeta(updated);
-    return updated;
+  function saveHeaderInBackground(): Project | null {
+    if (!liveProject) return null;
+    userMutatedRef.current = true;
+    setProject(liveProject);
+    void updateWorkspaceMeta(liveProject);
+    return liveProject;
   }
 
   async function processFiles(fileList: FileList | File[] | null) {
@@ -132,21 +171,29 @@ export default function HomePage() {
     if (rawCandidates.length === 0) return;
 
     const verifiedFiles: File[] = [];
+    let skippedCount = 0;
     for (const candidate of rawCandidates) {
       const isGenuineImage = await verifyImageMagicBytes(candidate);
       if (isGenuineImage) {
         verifiedFiles.push(candidate);
+      } else {
+        skippedCount += 1;
       }
     }
 
     if (verifiedFiles.length === 0) {
       setErrorText(
-        "Berkas ditolak: hanya gambar asli berformat JPG, PNG, atau WebP (maks. 25 MB) yang diizinkan."
+        "File tidak dapat dibuka: pilih foto asli berformat JPG, PNG, atau WebP (maksimal 25 MB per foto)."
       );
       return;
     }
 
-    setErrorText("");
+    userMutatedRef.current = true;
+    setErrorText(
+      skippedCount > 0
+        ? `${skippedCount} file dilewati karena bukan foto JPG, PNG, atau WebP (maksimal 25 MB).`
+        : ""
+    );
     setUploading(true);
     let firstAddedId: string | null = null;
     const createdList: Receipt[] = [];
@@ -155,7 +202,7 @@ export default function HomePage() {
       for (let i = 0; i < verifiedFiles.length; i += 1) {
         const file = verifiedFiles[i];
         setUploadStatusText(
-          `Memproses foto ${i + 1} dari ${verifiedFiles.length} (${file.name})...`
+          `Membaca foto struk ${i + 1} dari ${verifiedFiles.length} (${file.name})...`
         );
 
         let compressed: Blob = file;
@@ -208,7 +255,7 @@ export default function HomePage() {
             aiUsed = Boolean(json.aiUsed);
           }
         } catch {
-          // Keep compressed photo for manual review when offline
+          // Keep compressed photo for manual entry when offline
         }
 
         const confidence = extracted?.confidence_score ?? 0.5;
@@ -262,7 +309,7 @@ export default function HomePage() {
           a.referenceNumber.localeCompare(b.referenceNumber)
         )
       );
-      announcePolite(`${createdList.length} foto nota selesai ditambahkan.`);
+      announcePolite(`${createdList.length} foto struk selesai ditambahkan.`);
 
       if (createdList.length === 1 && createdList[0].totalAmount === 0 && firstAddedId) {
         setActiveReceiptId(firstAddedId);
@@ -278,19 +325,20 @@ export default function HomePage() {
 
   async function handleAddManualReceipt() {
     if (!project) return;
+    userMutatedRef.current = true;
     const refNum = await nextReferenceNumber(project.id);
     const receiptId = crypto.randomUUID();
     const dateToday = todayIsoDate();
     const blankImg = createManualNoteDataUrl(refNum, dateToday);
 
-    const created = await saveReceipt({
+    const draft: Receipt = {
       id: receiptId,
       projectId: project.id,
       referenceNumber: refNum,
       imageUrl: blankImg,
       imageHash: `manual-${receiptId}`,
       extractionMode: "detailed",
-      merchantName: "Pengeluaran Manual",
+      merchantName: "Pengeluaran Tanpa Struk",
       transactionDate: dateToday,
       category: project.categories[0] ?? "Lain-lain",
       subtotal: 0,
@@ -299,7 +347,7 @@ export default function HomePage() {
       totalAmount: 0,
       paymentMethod: "Tunai",
       confidenceScore: 0.5,
-      warningMessage: "Isi nama toko dan nominal sesuai bukti fisik.",
+      warningMessage: "Silakan isi nama keperluan dan nominal pengeluarannya.",
       isDuplicate: false,
       duplicateOfRef: null,
       status: "needs_review",
@@ -315,79 +363,142 @@ export default function HomePage() {
         },
       ],
       createdAt: new Date().toISOString(),
-    });
+    };
 
-    setReceipts((prev) => [...prev, created]);
+    setReceipts((prev) => [...prev, draft]);
     setActiveReceiptId(receiptId);
+    void saveReceipt(draft);
   }
 
   async function handleSaveVerified(updated: Receipt, moveNext: boolean) {
-    const saved = await saveReceipt(updated);
-    const nextList = receipts.map((r) => (r.id === saved.id ? saved : r));
+    userMutatedRef.current = true;
+    const dupRef = findDuplicateReceipt(
+      {
+        id: updated.id,
+        imageHash: updated.imageHash,
+        transactionDate: updated.transactionDate,
+        totalAmount: updated.totalAmount,
+        merchantName: updated.merchantName,
+      },
+      receipts
+    );
+    const finalized: Receipt = {
+      ...updated,
+      isDuplicate: Boolean(dupRef),
+      duplicateOfRef: dupRef,
+    };
+
+    const nextList = receipts.map((r) => (r.id === finalized.id ? finalized : r));
     setReceipts(nextList);
-    announcePolite(`Nota ${saved.referenceNumber} disimpan.`);
+    announcePolite(`Nota ${finalized.referenceNumber} disimpan.`);
+    void saveReceipt(finalized);
 
     if (!moveNext) {
       setActiveReceiptId(null);
       return;
     }
 
-    const idx = nextList.findIndex((r) => r.id === saved.id);
+    const idx = nextList.findIndex((r) => r.id === finalized.id);
     const nextTarget =
       nextList.find((r, i) => i > idx && r.status === "needs_review") ??
-      nextList.find((r) => r.id !== saved.id && r.status === "needs_review") ??
+      nextList.find((r) => r.id !== finalized.id && r.status === "needs_review") ??
       null;
 
     setActiveReceiptId(nextTarget ? nextTarget.id : null);
   }
 
-  async function handleDeleteOne(id: string) {
+  function handleDeleteOne(id: string) {
     if (!project) return;
-    await deleteReceipt(id, project.id);
+    userMutatedRef.current = true;
     setReceipts((prev) => prev.filter((r) => r.id !== id));
     if (activeReceiptId === id) setActiveReceiptId(null);
     announcePolite("Nota dihapus.");
+    void deleteReceipt(id, project.id);
   }
 
-  async function handleClearAll() {
+  function handleClearAll() {
     if (!project) return;
-    await clearAllWorkspaceReceipts(project.id);
+    userMutatedRef.current = true;
     setReceipts([]);
     announcePolite("Seluruh daftar nota dibersihkan.");
+    void clearAllWorkspaceReceipts(project.id);
   }
 
-  async function handleDownloadExcel() {
-    const latestProject = await persistHeaderMeta();
-    if (!latestProject) return;
-    exportProjectToExcel(latestProject, receipts);
-    announcePolite("Berkas Excel berhasil diunduh.");
+  function handleDownloadExcel() {
+    const snap = saveHeaderInBackground();
+    if (!snap) return;
+    exportProjectToExcel(snap, receipts);
+    announcePolite("File Excel berhasil diunduh.");
   }
 
   async function handleDownloadPdf() {
-    const latestProject = await persistHeaderMeta();
-    if (!latestProject) return;
-    setExportingPdf(true);
+    const snap = saveHeaderInBackground();
+    if (!snap) return;
+    setBusyExport("pdf");
     try {
-      await exportProjectToPdfLpj(latestProject, receipts, pdfGrid);
+      await exportProjectToPdfLpj(snap, receipts, pdfGrid);
       announcePolite("Dokumen PDF LPJ berhasil diunduh.");
     } finally {
-      setExportingPdf(false);
+      setBusyExport(null);
     }
+  }
+
+  async function handleDownloadDocx() {
+    const snap = saveHeaderInBackground();
+    if (!snap) return;
+    setBusyExport("docx");
+    try {
+      await exportProjectToDocx(snap, receipts);
+      announcePolite("Dokumen Word LPJ berhasil diunduh.");
+    } finally {
+      setBusyExport(null);
+    }
+  }
+
+  function handleDownloadCsv() {
+    const snap = saveHeaderInBackground();
+    if (!snap) return;
+    exportProjectToCsv(snap, receipts);
+    announcePolite("File CSV berhasil diunduh.");
+  }
+
+  function handleDownloadHtml() {
+    const snap = saveHeaderInBackground();
+    if (!snap) return;
+    exportProjectToHtml(snap, receipts);
+    announcePolite("File Web HTML berhasil diunduh.");
+  }
+
+  function handleDownloadTxt() {
+    const snap = saveHeaderInBackground();
+    if (!snap) return;
+    exportProjectToTxt(snap, receipts);
+    announcePolite("File teks ringkasan berhasil diunduh.");
   }
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-10 md:py-12 space-y-6 sm:space-y-8">
-      <section className="space-y-2">
-        <h1 className="font-serif-ledger font-bold text-[clamp(1.65rem,4vw,2.35rem)] leading-tight text-[var(--ink-primary)] tracking-tight">
-          Ubah foto nota jadi Excel &amp; PDF LPJ.
-        </h1>
-        <p className="text-sm sm:text-base text-[var(--ink-secondary)] max-w-2xl">
-          Unggah foto struk belanja atau nota warung sebanyak apa pun secara gratis tanpa kuota, lalu langsung unduh tabel rekap dan lampiran fotonya.
-        </p>
+      <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div className="space-y-2">
+          <h1 className="font-serif-ledger font-bold text-[clamp(1.65rem,4vw,2.35rem)] leading-tight text-[var(--ink-primary)] tracking-tight">
+            Ubah foto struk jadi laporan keuangan rapi.
+          </h1>
+          <p className="text-sm sm:text-base text-[var(--ink-secondary)] max-w-2xl">
+            Masukkan foto struk belanja atau nota warung sebanyak yang Anda punya, gratis tanpa daftar akun. Kalimat laporan LPJ, hitungan saldo, dan lampiran foto langsung tersusun otomatis.
+          </p>
+        </div>
+
+        <Link
+          href="/panduan"
+          className="btn-secondary text-xs sm:text-sm no-underline shrink-0 self-start sm:self-auto"
+        >
+          <BookGuideIcon className="w-4 h-4 shrink-0" />
+          <span>Cara Pakai &amp; Syarat Foto</span>
+        </Link>
       </section>
 
       <section
-        aria-label="Area unggah foto nota"
+        aria-label="Area unggah foto struk"
         onDragOver={(e) => {
           e.preventDefault();
           setIsDraggingOver(true);
@@ -398,9 +509,9 @@ export default function HomePage() {
           setIsDraggingOver(false);
           void processFiles(e.dataTransfer.files);
         }}
-        className={`rounded-[8px] border-2 border-dashed p-5 sm:p-8 md:p-10 text-center transition-colors ${
+        className={`rounded-[8px] border-2 border-dashed p-5 sm:p-8 text-center transition-colors ${
           isDraggingOver
-            ? "bg-[var(--verified-bg)] border-[var(--color-ledger)]"
+            ? "bg-[var(--verified-bg)] border-[var(--border-strong)]"
             : "bg-[var(--bg-surface)] border-[var(--border-control)]"
         }`}
       >
@@ -415,60 +526,79 @@ export default function HomePage() {
           className="sr-only"
         />
 
-        <div className="max-w-md mx-auto space-y-4">
-          <label
-            htmlFor="input-upload-nota-utama"
-            className={`btn-stamp text-sm sm:text-base px-4 sm:px-6 py-3 w-full sm:w-auto ${
-              uploading ? "opacity-60 pointer-events-none" : ""
-            }`}
-          >
-            <UploadStackIcon className="w-5 h-5 shrink-0" />
-            <span>
-              {uploading ? "Sedang Memproses Foto..." : "Pilih Foto Nota (Bisa Banyak)"}
-            </span>
-          </label>
+        <div className="max-w-xl mx-auto space-y-5">
+          <div className="space-y-2.5">
+            <label
+              htmlFor="input-upload-nota-utama"
+              className={`btn-stamp text-sm sm:text-base px-5 sm:px-7 py-3 w-full sm:w-auto ${
+                uploading ? "opacity-60 pointer-events-none" : ""
+              }`}
+            >
+              <UploadStackIcon className="w-5 h-5 shrink-0" />
+              <span>
+                {uploading
+                  ? "Sedang Membaca Foto Struk..."
+                  : "Pilih Foto Struk (Bisa Banyak Sekaligus)"}
+              </span>
+            </label>
 
-          <p className="text-xs sm:text-sm text-[var(--ink-secondary)]">
-            Atau tarik dan lepas foto struk ke kotak ini (JPG, PNG, WebP).
-          </p>
+            <p className="text-xs sm:text-sm text-[var(--ink-secondary)]">
+              Bisa juga tarik foto dari folder ke kotak ini (JPG, PNG, atau WebP · maks. 25 MB/foto).
+            </p>
+          </div>
 
-          <div className="pt-1 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center justify-center gap-2">
-            <fieldset className="grid grid-cols-2 sm:inline-flex items-center gap-1.5 p-1 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-control)]">
-              <legend className="sr-only">Cara baca nota</legend>
+          <fieldset className="text-left space-y-2 pt-2 border-t border-[var(--border-subtle)]">
+            <legend className="text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5">
+              Pilih cara mencatat isi struk:
+            </legend>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <button
                 type="button"
                 aria-pressed={extractionMode === "detailed"}
                 onClick={() => setExtractionMode("detailed")}
-                className={`min-h-[44px] px-3 rounded-[4px] text-xs font-semibold ${
+                className={`min-h-[44px] p-3 rounded-[6px] border text-left transition-colors ${
                   extractionMode === "detailed"
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)]"
-                    : "text-[var(--ink-primary)]"
+                    ? "bg-[var(--verified-bg)] border-[var(--border-strong)]"
+                    : "bg-[var(--bg-paper)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
                 }`}
               >
-                Rincian Barang
+                <span className="block text-xs sm:text-sm font-bold text-[var(--ink-primary)]">
+                  Catat nama tiap barang
+                </span>
+                <span className="block text-xs text-[var(--ink-secondary)] mt-0.5">
+                  Nama barang, jumlah beli, dan harga satuannya ditulis satu per satu.
+                </span>
               </button>
+
               <button
                 type="button"
                 aria-pressed={extractionMode === "summary"}
                 onClick={() => setExtractionMode("summary")}
-                className={`min-h-[44px] px-3 rounded-[4px] text-xs font-semibold ${
+                className={`min-h-[44px] p-3 rounded-[6px] border text-left transition-colors ${
                   extractionMode === "summary"
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)]"
-                    : "text-[var(--ink-primary)]"
+                    ? "bg-[var(--verified-bg)] border-[var(--border-strong)]"
+                    : "bg-[var(--bg-paper)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
                 }`}
               >
-                Total Saja (Cepat)
+                <span className="block text-xs sm:text-sm font-bold text-[var(--ink-primary)]">
+                  Catat total belanja saja
+                </span>
+                <span className="block text-xs text-[var(--ink-secondary)] mt-0.5">
+                  Cukup ambil nama toko, tanggal, dan total bayar akhirnya (lebih cepat).
+                </span>
               </button>
-            </fieldset>
+            </div>
+          </fieldset>
 
+          <div className="flex justify-center">
             <button
               type="button"
               disabled={uploading}
               onClick={() => void handleAddManualReceipt()}
-              className="btn-secondary text-xs w-full sm:w-auto"
+              className="btn-secondary text-xs sm:text-sm w-full sm:w-auto"
             >
               <PlusBoxIcon className="w-4 h-4 shrink-0" />
-              <span>Catat Manual</span>
+              <span>Tambah pengeluaran tanpa foto struk</span>
             </button>
           </div>
         </div>
@@ -477,7 +607,7 @@ export default function HomePage() {
           <div
             role="status"
             aria-live="polite"
-            className="mt-5 p-3 rounded-[6px] bg-[var(--bg-subtle)] border border-[var(--border-control)] text-xs font-mono-tabular text-[var(--ink-primary)] max-w-lg mx-auto"
+            className="mt-5 p-3 rounded-[6px] bg-[var(--bg-subtle)] border border-[var(--border-card)] text-xs font-mono-tabular text-[var(--ink-primary)] max-w-lg mx-auto"
           >
             {uploadStatusText}
           </div>
@@ -488,9 +618,9 @@ export default function HomePage() {
         <div
           role="status"
           aria-live="polite"
-          className="p-6 rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-control)] text-center text-sm text-[var(--ink-secondary)]"
+          className="p-6 rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] text-center text-sm text-[var(--ink-secondary)]"
         >
-          Memuat daftar nota tersimpan...
+          Menyiapkan ruang kerja nota...
         </div>
       )}
 
@@ -520,71 +650,118 @@ export default function HomePage() {
         </div>
       )}
 
-      {viewState === "ready" && receipts.length > 0 && project && (
-        <section aria-label="Unduh laporan dan daftar nota" className="space-y-5">
-          <div className="rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--color-ledger)] p-4 sm:p-5 space-y-4">
+      {viewState === "ready" && receipts.length > 0 && project && narrative && (
+        <section aria-label="Unduh laporan LPJ dan daftar nota" className="space-y-5">
+          <div className="rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-strong)] p-4 sm:p-5 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-              <div className="md:col-span-5 min-w-0">
+              <div className="md:col-span-7 min-w-0">
                 <label
                   htmlFor="input-judul-laporan"
                   className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1"
                 >
-                  Judul Laporan LPJ
+                  Judul Laporan / Nama Kegiatan
                 </label>
                 <input
                   id="input-judul-laporan"
                   type="text"
-                  maxLength={160}
+                  maxLength={140}
                   value={titleInput}
                   onChange={(e) => setTitleInput(e.target.value)}
-                  onBlur={() => void persistHeaderMeta()}
-                  placeholder="Contoh: LPJ Kepanitiaan Seminar"
+                  onBlur={() => saveHeaderInBackground()}
+                  placeholder="Contoh: Laporan Keuangan Panitia Pentas Seni"
                   className="input-ledger font-semibold"
                 />
               </div>
 
-              <div className="md:col-span-7 grid grid-cols-1 sm:grid-cols-2 lg:flex lg:flex-wrap lg:justify-end gap-2.5">
+              <div className="md:col-span-5">
+                <label
+                  htmlFor="select-grid-pdf"
+                  className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1"
+                >
+                  Ukuran Lampiran Foto di PDF
+                </label>
+                <select
+                  id="select-grid-pdf"
+                  value={pdfGrid}
+                  onChange={(e) => setPdfGrid(e.target.value as PdfGridDensity)}
+                  className="input-ledger text-sm font-semibold"
+                >
+                  <option value="2x2">4 foto struk per halaman (Lebih besar)</option>
+                  <option value="2x3">6 foto struk per halaman (Hemat kertas)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <button
+                type="button"
+                disabled={busyExport !== null}
+                onClick={() => void handleDownloadPdf()}
+                className="btn-stamp w-full"
+              >
+                <PdfDocumentIcon className="w-4 h-4 shrink-0" />
+                <span>
+                  {busyExport === "pdf" ? "Menyusun PDF..." : "Unduh PDF (.pdf)"}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={busyExport !== null}
+                onClick={() => void handleDownloadDocx()}
+                className="btn-ledger w-full"
+              >
+                <WordDocumentIcon className="w-4 h-4 shrink-0" />
+                <span>
+                  {busyExport === "docx" ? "Menyusun Word..." : "Unduh Word (.docx)"}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadExcel}
+                className="btn-secondary w-full"
+              >
+                <SpreadsheetIcon className="w-4 h-4 shrink-0" />
+                <span>Unduh Excel (.xlsx)</span>
+              </button>
+            </div>
+
+            <div className="pt-2.5 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-[var(--ink-secondary)]">
+                Ekspor ke format file lainnya:
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void handleDownloadExcel()}
-                  className="btn-secondary w-full lg:w-auto"
+                  onClick={handleDownloadCsv}
+                  className="btn-secondary !py-1.5 !px-3 text-xs"
                 >
-                  <SpreadsheetIcon className="w-4 h-4 shrink-0 text-[var(--color-ledger)]" />
-                  <span>Unduh Excel (.xlsx)</span>
+                  <DownloadTrayIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>CSV (.csv)</span>
                 </button>
-
-                <div className="flex items-center gap-2 w-full lg:w-auto">
-                  <label htmlFor="select-grid-pdf" className="sr-only">
-                    Jumlah foto per halaman PDF
-                  </label>
-                  <select
-                    id="select-grid-pdf"
-                    value={pdfGrid}
-                    onChange={(e) => setPdfGrid(e.target.value as PdfGridDensity)}
-                    className="input-ledger !w-auto shrink-0 text-xs font-semibold"
-                  >
-                    <option value="2x2">4/A4</option>
-                    <option value="2x3">6/A4</option>
-                  </select>
-
-                  <button
-                    type="button"
-                    disabled={exportingPdf}
-                    onClick={() => void handleDownloadPdf()}
-                    className="btn-ledger flex-1 lg:flex-initial"
-                  >
-                    <PdfDocumentIcon className="w-4 h-4 shrink-0" />
-                    <span>
-                      {exportingPdf ? "Menyiapkan..." : "Unduh PDF (.pdf)"}
-                    </span>
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={handleDownloadHtml}
+                  className="btn-secondary !py-1.5 !px-3 text-xs"
+                >
+                  <DownloadTrayIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>Halaman Web (.html)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadTxt}
+                  className="btn-secondary !py-1.5 !px-3 text-xs"
+                >
+                  <DownloadTrayIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>Teks Ringkas (.txt)</span>
+                </button>
               </div>
             </div>
 
             <details className="pt-2 border-t border-[var(--border-subtle)] text-sm">
-              <summary className="font-semibold text-[var(--ink-secondary)] min-h-[44px] inline-flex items-center">
-                Opsi tambahan cetak PDF (dana awal &amp; nama tanda tangan)
+              <summary className="font-semibold text-[var(--ink-primary)] min-h-[44px] inline-flex items-center">
+                Isi dana awal &amp; nama penanda tangan laporan (opsional)
               </summary>
               <div className="pt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
@@ -592,7 +769,7 @@ export default function HomePage() {
                     htmlFor="opt-dana-awal"
                     className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
                   >
-                    Dana Awal (Rp)
+                    Dana Awal yang Diterima (Rp)
                   </label>
                   <input
                     id="opt-dana-awal"
@@ -601,7 +778,7 @@ export default function HomePage() {
                     maxLength={20}
                     value={budgetInput}
                     onChange={(e) => setBudgetInput(e.target.value)}
-                    onBlur={() => void persistHeaderMeta()}
+                    onBlur={() => saveHeaderInBackground()}
                     placeholder="Contoh: 3000000"
                     className="input-ledger font-mono-tabular text-sm"
                   />
@@ -611,16 +788,16 @@ export default function HomePage() {
                     htmlFor="opt-ketua"
                     className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
                   >
-                    Nama Ketua Pelaksana
+                    Nama Ketua / Penanggung Jawab
                   </label>
                   <input
                     id="opt-ketua"
                     type="text"
-                    maxLength={120}
+                    maxLength={100}
                     value={chairpersonInput}
                     onChange={(e) => setChairpersonInput(e.target.value)}
-                    onBlur={() => void persistHeaderMeta()}
-                    placeholder="Opsional"
+                    onBlur={() => saveHeaderInBackground()}
+                    placeholder="Boleh dikosongkan"
                     className="input-ledger text-sm"
                   />
                 </div>
@@ -629,19 +806,31 @@ export default function HomePage() {
                     htmlFor="opt-bendahara"
                     className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
                   >
-                    Nama Bendahara
+                    Nama Bendahara / Penyusun
                   </label>
                   <input
                     id="opt-bendahara"
                     type="text"
-                    maxLength={120}
+                    maxLength={100}
                     value={treasurerInput}
                     onChange={(e) => setTreasurerInput(e.target.value)}
-                    onBlur={() => void persistHeaderMeta()}
-                    placeholder="Opsional"
+                    onBlur={() => saveHeaderInBackground()}
+                    placeholder="Boleh dikosongkan"
                     className="input-ledger text-sm"
                   />
                 </div>
+              </div>
+            </details>
+
+            <details className="pt-2 border-t border-[var(--border-subtle)] text-sm">
+              <summary className="font-semibold text-[var(--ink-secondary)] min-h-[44px] inline-flex items-center">
+                Lihat kalimat laporan LPJ yang dibuat otomatis dari data Anda
+              </summary>
+              <div className="mt-2 p-3.5 sm:p-4 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] space-y-2.5 text-xs sm:text-sm text-[var(--ink-primary)] leading-relaxed">
+                <p>{narrative.openingParagraph}</p>
+                <p>{narrative.financialParagraph}</p>
+                <p>{narrative.categoryParagraph}</p>
+                <p>{narrative.closingParagraph}</p>
               </div>
             </details>
           </div>
@@ -652,7 +841,7 @@ export default function HomePage() {
                 <strong className="text-[var(--ink-primary)] font-mono-tabular">
                   {receipts.length} nota
                 </strong>{" "}
-                · Total{" "}
+                · Total belanja{" "}
                 <strong className="text-[var(--ink-primary)] font-mono-tabular">
                   {formatRupiah(totalSpent)}
                 </strong>
@@ -666,23 +855,23 @@ export default function HomePage() {
                     borderColor: "var(--amber-border)",
                   }}
                 >
-                  {needsReviewCount} perlu dicek
+                  {needsReviewCount} perlu dicek angkanya
                 </span>
               )}
               {cloudConnected && (
                 <span className="text-xs text-[var(--ink-muted)]">
-                  · Tersimpan di cloud
+                  · Tersimpan otomatis
                 </span>
               )}
             </div>
 
             <button
               type="button"
-              onClick={() => void handleClearAll()}
+              onClick={handleClearAll}
               className="btn-secondary !py-1.5 !px-3 text-xs"
             >
               <TrashBinIcon className="w-4 h-4 shrink-0" />
-              <span>Bersihkan Semua</span>
+              <span>Hapus Semua</span>
             </button>
           </div>
 
@@ -690,7 +879,7 @@ export default function HomePage() {
             {receipts.map((r) => (
               <li
                 key={r.id}
-                className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-control)] p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
                   <button
@@ -717,14 +906,14 @@ export default function HomePage() {
                       </span>
                       {r.isDuplicate && (
                         <span
-                          className="text-[11px] font-bold px-2 py-0.5 rounded-[2px] border"
+                          className="text-[11px] font-bold px-2 py-0.5 rounded-[3px] border"
                           style={{
                             backgroundColor: "var(--stamp-tint-bg)",
                             color: "var(--stamp-tint-ink)",
                             borderColor: "var(--stamp-tint-border)",
                           }}
                         >
-                          Kemungkinan ganda ({r.duplicateOfRef})
+                          Mirip dengan #{r.duplicateOfRef}
                         </span>
                       )}
                     </div>
@@ -753,16 +942,16 @@ export default function HomePage() {
                     {r.status === "verified" ? (
                       <>
                         <StampCheckIcon className="w-4 h-4 shrink-0" />
-                        <span>Sah · Edit</span>
+                        <span>Sudah pas · Ubah</span>
                       </>
                     ) : (
-                      <span>Cek / Edit</span>
+                      <span>Cek angkanya</span>
                     )}
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => void handleDeleteOne(r.id)}
+                    onClick={() => handleDeleteOne(r.id)}
                     aria-label={`Hapus ${r.referenceNumber}`}
                     className="btn-secondary !p-2.5 min-w-[44px]"
                   >
@@ -777,13 +966,13 @@ export default function HomePage() {
 
       {activeReceiptId && project && (
         <SplitScreenVerifierModal
-          project={project}
+          project={liveProject ?? project}
           receipts={receipts}
           activeReceiptId={activeReceiptId}
           onClose={() => setActiveReceiptId(null)}
           onSelectReceipt={(id) => setActiveReceiptId(id)}
           onSaveReceipt={handleSaveVerified}
-          onDeleteReceipt={handleDeleteOne}
+          onDeleteReceipt={async (id) => handleDeleteOne(id)}
         />
       )}
     </div>

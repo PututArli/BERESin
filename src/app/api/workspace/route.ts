@@ -50,25 +50,26 @@ export async function GET(request: Request) {
       ON CONFLICT (id) DO NOTHING
     `;
 
-    const wsRows = await sql`
-      SELECT id, report_title, chairperson_name, treasurer_name, initial_budget, categories, created_at
-      FROM workspaces
-      WHERE id = ${workspaceId}
-      LIMIT 1
-    `;
+    const [wsRows, receiptRows] = await Promise.all([
+      sql`
+        SELECT id, report_title, chairperson_name, treasurer_name, initial_budget, categories, created_at
+        FROM workspaces
+        WHERE id = ${workspaceId}
+        LIMIT 1
+      `,
+      sql`
+        SELECT
+          id, workspace_id, reference_number, image_url, image_hash, extraction_mode,
+          merchant_name, transaction_date, category, subtotal, tax_and_service,
+          discount, total_amount, payment_method, confidence_score, warning_message,
+          is_duplicate, duplicate_of_ref, status, notes, items, created_at
+        FROM receipts
+        WHERE workspace_id = ${workspaceId}
+        ORDER BY reference_number ASC
+        LIMIT 500
+      `,
+    ]);
     const ws = wsRows[0];
-
-    const receiptRows = await sql`
-      SELECT
-        id, workspace_id, reference_number, image_url, image_hash, extraction_mode,
-        merchant_name, transaction_date, category, subtotal, tax_and_service,
-        discount, total_amount, payment_method, confidence_score, warning_message,
-        is_duplicate, duplicate_of_ref, status, notes, items, created_at
-      FROM receipts
-      WHERE workspace_id = ${workspaceId}
-      ORDER BY reference_number ASC
-      LIMIT 500
-    `;
 
     const project: Project = {
       id: String(ws.id),

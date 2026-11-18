@@ -2,14 +2,17 @@
 
 :root,
 [data-theme="light"] {
+  color-scheme: light;
   --bg-paper: #f6f2ea;
   --bg-surface: #fdfbf7;
   --bg-subtle: #ece6da;
   --ink-primary: #181b19;
   --ink-secondary: #434b46;
   --ink-muted: #525b55;
-  --border-subtle: #c8c0b0;
+  --border-subtle: #dcd5c7;
+  --border-card: #c5bdb0;
   --border-control: #707a73;
+  --border-strong: #164231;
 
   --color-ledger: #164231;
   --color-ledger-hover: #0f3023;
@@ -26,12 +29,13 @@
   --stamp-accent: #a82819;
   --stamp-accent-hover: #8a1f12;
   --stamp-accent-ink: #fdfbf7;
+  --stamp-button-border: #8a1f12;
   --stamp-tint-bg: #fdece9;
   --stamp-tint-ink: #942012;
   --stamp-tint-border: #a82819;
 
   --focus-ring: #a82819;
-  --modal-scrim: rgba(20, 23, 21, 0.62);
+  --modal-scrim: rgba(20, 23, 21, 0.6);
 
   --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
   --font-serif: "Newsreader", Georgia, "Times New Roman", serif;
@@ -39,36 +43,40 @@
 }
 
 [data-theme="dark"] {
-  --bg-paper: #141715;
-  --bg-surface: #1c211e;
-  --bg-subtle: #252c28;
-  --ink-primary: #f2efe9;
-  --ink-secondary: #c4ccc7;
-  --ink-muted: #a3aea7;
-  --border-subtle: #38423c;
-  --border-control: #8e9b93;
+  color-scheme: dark;
+  --bg-paper: #131615;
+  --bg-surface: #1b201e;
+  --bg-subtle: #242b28;
+  --ink-primary: #f3f1ec;
+  --ink-secondary: #c4ccc8;
+  --ink-muted: #9ca7a2;
+  --border-subtle: #2a332f;
+  --border-card: #343f3a;
+  --border-control: #73807a;
+  --border-strong: #4b8b6f;
 
-  --color-ledger: #6ee7b7;
-  --color-ledger-hover: #a7f3d0;
-  --color-ledger-ink: #10281e;
+  --color-ledger: #47b889;
+  --color-ledger-hover: #5ecf9f;
+  --color-ledger-ink: #0b2219;
 
-  --verified-bg: #163026;
-  --verified-ink: #6ee7b7;
-  --verified-border: #6ee7b7;
+  --verified-bg: #162c23;
+  --verified-ink: #7ce6b9;
+  --verified-border: #4ca37d;
 
-  --amber-bg: #33240b;
+  --amber-bg: #2e220e;
   --amber-ink: #fcd34d;
-  --amber-border: #fcd34d;
+  --amber-border: #c88a1e;
 
-  --stamp-accent: #a82819;
-  --stamp-accent-hover: #c43423;
-  --stamp-accent-ink: #fdfbf7;
-  --stamp-tint-bg: #3b1816;
+  --stamp-accent: #b83221;
+  --stamp-accent-hover: #9e291a;
+  --stamp-accent-ink: #fffdfb;
+  --stamp-button-border: #d44d3b;
+  --stamp-tint-bg: #341815;
   --stamp-tint-ink: #fca5a5;
-  --stamp-tint-border: #fca5a5;
+  --stamp-tint-border: #c84b3a;
 
   --focus-ring: #fcd34d;
-  --modal-scrim: rgba(6, 8, 7, 0.78);
+  --modal-scrim: rgba(7, 9, 8, 0.76);
 }
 
 @layer base {
@@ -152,7 +160,7 @@
 }
 
 .ledger-double-rule {
-  border-top: 2px solid var(--color-ledger);
+  border-top: 2px solid var(--border-strong);
   border-bottom: 1px solid var(--border-control);
 }
 
@@ -160,7 +168,7 @@
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
-  border-radius: 2px;
+  border-radius: 3px;
   border: 1.5px solid var(--border-control);
   background-color: var(--bg-subtle);
   color: var(--ink-primary);
@@ -185,11 +193,12 @@
   background-color: var(--color-ledger);
   color: var(--color-ledger-ink);
   border: 1.5px solid var(--color-ledger);
-  transition: background-color 110ms ease, transform 80ms ease;
+  transition: background-color 100ms ease, transform 70ms ease;
 }
 
 .btn-ledger:hover:not(:disabled) {
   background-color: var(--color-ledger-hover);
+  border-color: var(--color-ledger-hover);
 }
 
 .btn-ledger:active:not(:disabled) {
@@ -209,8 +218,8 @@
   font-size: 0.9375rem;
   background-color: var(--stamp-accent);
   color: var(--stamp-accent-ink);
-  border: 1.5px solid var(--stamp-tint-border);
-  transition: background-color 110ms ease, transform 80ms ease;
+  border: 1.5px solid var(--stamp-button-border);
+  transition: background-color 100ms ease, transform 70ms ease;
 }
 
 .btn-stamp:hover:not(:disabled) {
@@ -235,7 +244,7 @@
   background-color: var(--bg-surface);
   color: var(--ink-primary);
   border: 1.5px solid var(--border-control);
-  transition: background-color 110ms ease, transform 80ms ease;
+  transition: background-color 100ms ease, transform 70ms ease;
 }
 
 .btn-secondary:hover:not(:disabled) {
@@ -257,6 +266,11 @@
   color: var(--ink-primary);
   border: 1.5px solid var(--border-control);
   font-size: 0.9375rem;
+}
+
+.input-ledger option {
+  background-color: var(--bg-surface);
+  color: var(--ink-primary);
 }
 
 .input-ledger::placeholder {

@@ -13,8 +13,8 @@ import { getAppSettings, saveAppSettings } from "@/lib/storage";
 interface LedgerContextValue {
   settings: AppSettings;
   isReady: boolean;
-  toggleTheme: () => Promise<void>;
-  updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
+  toggleTheme: () => void;
+  updateSettings: (patch: Partial<AppSettings>) => void;
   announcePolite: (msg: string) => void;
 }
 
@@ -27,8 +27,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 const LedgerContext = createContext<LedgerContextValue>({
   settings: DEFAULT_SETTINGS,
   isReady: false,
-  toggleTheme: async () => {},
-  updateSettings: async () => {},
+  toggleTheme: () => {},
+  updateSettings: () => {},
   announcePolite: () => {},
 });
 
@@ -40,6 +40,9 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
   const applyThemeToDom = useCallback((theme: "light" | "dark") => {
     if (typeof document !== "undefined") {
       document.documentElement.setAttribute("data-theme", theme);
+    }
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("beresin_theme", theme);
     }
   }, []);
 
@@ -58,35 +61,36 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
         if (active) setIsReady(true);
       }
     }
-    init();
+    void init();
     return () => {
       active = false;
     };
   }, [applyThemeToDom]);
 
   const updateSettings = useCallback(
-    async (patch: Partial<AppSettings>) => {
-      const merged: AppSettings = { ...settings, ...patch };
-      setSettings(merged);
-      applyThemeToDom(merged.theme);
-      try {
-        await saveAppSettings(merged);
-      } catch {
-        // Keep in-memory state if IndexedDB is unavailable
-      }
+    (patch: Partial<AppSettings>) => {
+      setSettings((prev) => {
+        const merged: AppSettings = { ...prev, ...patch };
+        applyThemeToDom(merged.theme);
+        void saveAppSettings(merged).catch(() => {});
+        return merged;
+      });
     },
-    [settings, applyThemeToDom]
+    [applyThemeToDom]
   );
 
-  const toggleTheme = useCallback(async () => {
-    const nextTheme = settings.theme === "light" ? "dark" : "light";
-    await updateSettings({ theme: nextTheme });
-    setLiveMessage(
-      nextTheme === "dark"
-        ? "Tema gelap Meja Malam diaktifkan."
-        : "Tema terang Kertas Arsip diaktifkan."
-    );
-  }, [settings.theme, updateSettings]);
+  const toggleTheme = useCallback(() => {
+    setSettings((prev) => {
+      const nextTheme = prev.theme === "light" ? "dark" : "light";
+      const merged: AppSettings = { ...prev, theme: nextTheme };
+      applyThemeToDom(nextTheme);
+      void saveAppSettings(merged).catch(() => {});
+      setLiveMessage(
+        nextTheme === "dark" ? "Mode gelap diaktifkan." : "Mode terang diaktifkan."
+      );
+      return merged;
+    });
+  }, [applyThemeToDom]);
 
   const announcePolite = useCallback((msg: string) => {
     setLiveMessage("");

@@ -1,88 +1,87 @@
 import * as XLSX from "xlsx";
 import type { Project, Receipt } from "@/types/beresin";
-import { formatShortDateId, todayIsoDate } from "@/lib/format";
+import { computeLpjNarrative } from "@/lib/lpj-narrative";
 import { sanitizeSpreadsheetCell } from "@/lib/security";
-
-function sanitizeFileSlug(title: string): string {
-  return (
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 60) || "lpj-beresinhahay"
-  );
-}
 
 export function exportProjectToExcel(project: Project, receipts: Receipt[]): void {
   const workbook = XLSX.utils.book_new();
-
-  const totalSpent = receipts.reduce((acc, r) => acc + r.totalAmount, 0);
-  const remainingBalance = project.initialBudget - totalSpent;
-  const verifiedCount = receipts.filter((r) => r.status === "verified").length;
-
-  const categoryTotals = new Map<string, { count: number; amount: number }>();
-  for (const cat of project.categories) {
-    categoryTotals.set(cat, { count: 0, amount: 0 });
-  }
-  for (const r of receipts) {
-    const prev = categoryTotals.get(r.category) ?? { count: 0, amount: 0 };
-    categoryTotals.set(r.category, {
-      count: prev.count + 1,
-      amount: prev.amount + r.totalAmount,
-    });
-  }
+  const narrative = computeLpjNarrative(project, receipts);
 
   const summaryRows: Array<Array<string | number>> = [
-    ["LAPORAN PERTANGGUNGJAWABAN KEUANGAN (BERESinHAHAY)"],
-    ["Nama Laporan / Kegiatan", sanitizeSpreadsheetCell(project.title)],
-    ["Ketua Pelaksana", sanitizeSpreadsheetCell(project.chairpersonName || "-")],
-    ["Bendahara", sanitizeSpreadsheetCell(project.treasurerName || "-")],
-    ["Tanggal Unduh", formatShortDateId(todayIsoDate())],
+    ["LAPORAN PERTANGGUNGJAWABAN KEUANGAN (LPJ) · BERESin"],
+    ["Judul Laporan / Kegiatan", sanitizeSpreadsheetCell(narrative.safeTitle)],
+    [
+      "Ketua Pelaksana / Penanggung Jawab",
+      sanitizeSpreadsheetCell(project.chairpersonName || "-"),
+    ],
+    [
+      "Bendahara / Penyusun Laporan",
+      sanitizeSpreadsheetCell(project.treasurerName || "-"),
+    ],
+    ["Tanggal Unduh", narrative.printDateLabel],
     [],
-    ["RINGKASAN NERACA DANA"],
-    ["Dana Awal / Pemasukan (Rp)", project.initialBudget],
-    ["Total Pengeluaran (Rp)", totalSpent],
-    ["Sisa Saldo (Rp)", remainingBalance],
-    ["Jumlah Bukti Nota", `${receipts.length} nota (${verifiedCount} sah)`],
+    ["URAIAN LAPORAN OTOMATIS"],
+    [sanitizeSpreadsheetCell(narrative.openingParagraph)],
+    [sanitizeSpreadsheetCell(narrative.financialParagraph)],
+    [sanitizeSpreadsheetCell(narrative.categoryParagraph)],
+    [sanitizeSpreadsheetCell(narrative.closingParagraph)],
     [],
-    ["REKAPITULASI PER KATEGORI / POS ANGGARAN"],
-    ["Pos Anggaran", "Jumlah Nota", "Total Pengeluaran (Rp)", "Porsi Pengeluaran (%)"],
+    ["RINGKASAN DANA"],
+    ["Dana Awal / Pemasukan (Rp)", narrative.initialBudget],
+    ["Total Pengeluaran (Rp)", narrative.totalSpent],
+    ["Sisa / Selisih Dana (Rp)", narrative.remainingBalance],
+    [
+      "Jumlah Bukti Nota",
+      `${receipts.length} nota (${narrative.verifiedCount} sudah dicek)`,
+    ],
+    [],
+    ["REKAP PENGELUARAN PER KATEGORI"],
+    ["Kategori", "Jumlah Nota", "Total Pengeluaran (Rp)", "Porsi (%)"],
   ];
 
-  for (const [catName, stat] of categoryTotals.entries()) {
-    const pct = totalSpent > 0 ? Number(((stat.amount / totalSpent) * 100).toFixed(1)) : 0;
-    summaryRows.push([sanitizeSpreadsheetCell(catName), stat.count, stat.amount, pct]);
+  for (const row of narrative.categoryRows) {
+    summaryRows.push([
+      sanitizeSpreadsheetCell(row.category),
+      row.count,
+      row.amount,
+      row.pct,
+    ]);
   }
-  summaryRows.push(["TOTAL KESELURUHAN", receipts.length, totalSpent, totalSpent > 0 ? 100 : 0]);
+  summaryRows.push([
+    "TOTAL KESELURUHAN",
+    receipts.length,
+    narrative.totalSpent,
+    narrative.totalSpent > 0 ? 100 : 0,
+  ]);
 
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
-  wsSummary["!cols"] = [{ wch: 34 }, { wch: 18 }, { wch: 24 }, { wch: 22 }];
-  XLSX.utils.book_append_sheet(workbook, wsSummary, "Ringkasan Kategori");
+  wsSummary["!cols"] = [{ wch: 36 }, { wch: 22 }, { wch: 24 }, { wch: 16 }];
+  XLSX.utils.book_append_sheet(workbook, wsSummary, "Laporan & Ringkasan");
 
   const receiptHeader = [
-    "No. Referensi",
-    "Tanggal Transaksi",
-    "Nama Toko / Penerima",
-    "Pos Anggaran",
-    "Metode Bayar",
-    "Subtotal (Rp)",
-    "Pajak & Layanan (Rp)",
-    "Diskon (Rp)",
-    "Total Akhir (Rp)",
-    "Status Verifikasi",
-    "Peringatan Ganda",
-    "Catatan Bendahara",
+    "Kode Nota",
+    "Tanggal Beli",
+    "Nama Toko / Tempat Beli",
+    "Kategori",
+    "Cara Bayar",
+    "Subtotal Barang (Rp)",
+    "Biaya Tambahan / Pajak (Rp)",
+    "Potongan / Diskon (Rp)",
+    "Total Bayar (Rp)",
+    "Status Cek",
+    "Keterangan Kembar",
+    "Catatan Tambahan",
   ];
 
   const receiptRows: Array<Array<string | number>> = [receiptHeader];
   for (const r of receipts) {
     const statusLabel =
       r.status === "verified"
-        ? "Sah (Terverifikasi)"
+        ? "Sudah pas"
         : r.status === "needs_review"
-        ? "Perlu Dicek"
+        ? "Perlu dicek"
         : r.status === "processing"
-        ? "Memproses"
+        ? "Sedang dibaca"
         : "Gagal";
     receiptRows.push([
       sanitizeSpreadsheetCell(r.referenceNumber),
@@ -96,53 +95,71 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
       r.totalAmount,
       statusLabel,
       r.isDuplicate
-        ? sanitizeSpreadsheetCell(`Cek kesamaan dgn ${r.duplicateOfRef ?? "nota lain"}`)
+        ? sanitizeSpreadsheetCell(`Mirip dengan ${r.duplicateOfRef ?? "nota lain"}`)
         : "-",
       sanitizeSpreadsheetCell(r.notes || "-"),
     ]);
   }
-  receiptRows.push([
-    "TOTAL",
-    "",
-    "",
-    "",
-    "",
-    receipts.reduce((s, r) => s + r.subtotal, 0),
-    receipts.reduce((s, r) => s + r.taxAndService, 0),
-    receipts.reduce((s, r) => s + r.discount, 0),
-    totalSpent,
-    "",
-    "",
-    "",
-  ]);
 
   const wsReceipts = XLSX.utils.aoa_to_sheet(receiptRows);
+  const lastReceiptDataRow = receipts.length + 1;
+  const totalReceiptRowIdx = lastReceiptDataRow + 1;
+
+  XLSX.utils.sheet_add_aoa(
+    wsReceipts,
+    [["TOTAL", "", "", "", "", 0, 0, 0, 0, "", "", ""]],
+    { origin: `A${totalReceiptRowIdx}` }
+  );
+
+  if (receipts.length > 0) {
+    wsReceipts[`F${totalReceiptRowIdx}`] = {
+      t: "n",
+      f: `SUM(F2:F${lastReceiptDataRow})`,
+      v: receipts.reduce((s, r) => s + r.subtotal, 0),
+    };
+    wsReceipts[`G${totalReceiptRowIdx}`] = {
+      t: "n",
+      f: `SUM(G2:G${lastReceiptDataRow})`,
+      v: receipts.reduce((s, r) => s + r.taxAndService, 0),
+    };
+    wsReceipts[`H${totalReceiptRowIdx}`] = {
+      t: "n",
+      f: `SUM(H2:H${lastReceiptDataRow})`,
+      v: receipts.reduce((s, r) => s + r.discount, 0),
+    };
+    wsReceipts[`I${totalReceiptRowIdx}`] = {
+      t: "n",
+      f: `SUM(I2:I${lastReceiptDataRow})`,
+      v: narrative.totalSpent,
+    };
+  }
+
   wsReceipts["!cols"] = [
     { wch: 15 },
-    { wch: 18 },
+    { wch: 16 },
     { wch: 30 },
     { wch: 18 },
     { wch: 14 },
-    { wch: 16 },
-    { wch: 18 },
-    { wch: 14 },
-    { wch: 18 },
     { wch: 20 },
     { wch: 24 },
-    { wch: 30 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 28 },
   ];
-  XLSX.utils.book_append_sheet(workbook, wsReceipts, "Rekap Per Nota");
+  XLSX.utils.book_append_sheet(workbook, wsReceipts, "Daftar Nota");
 
   const itemRows: Array<Array<string | number>> = [
     [
-      "No. Referensi Nota",
-      "Tanggal",
+      "Kode Nota",
+      "Tanggal Beli",
       "Nama Toko",
       "Kategori",
-      "Nama Barang / Uraian",
-      "Kuantitas",
+      "Nama Barang / Keperluan",
+      "Jumlah",
       "Harga Satuan (Rp)",
-      "Subtotal Baris (Rp)",
+      "Total Baris (Rp)",
     ],
   ];
 
@@ -153,7 +170,7 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
         sanitizeSpreadsheetCell(r.transactionDate ?? "-"),
         sanitizeSpreadsheetCell(r.merchantName),
         sanitizeSpreadsheetCell(r.category),
-        "(Rekap langsung tanpa rincian baris)",
+        "(Dicatat total langsung tanpa rincian per barang)",
         1,
         r.totalAmount,
         r.totalAmount,
@@ -175,18 +192,33 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
   }
 
   const wsItems = XLSX.utils.aoa_to_sheet(itemRows);
+  const lastItemRow = itemRows.length;
+  if (lastItemRow > 1) {
+    const sumRowIdx = lastItemRow + 1;
+    XLSX.utils.sheet_add_aoa(
+      wsItems,
+      [["TOTAL RINCIAN BARANG", "", "", "", "", "", "", 0]],
+      { origin: `A${sumRowIdx}` }
+    );
+    wsItems[`H${sumRowIdx}`] = {
+      t: "n",
+      f: `SUM(H2:H${lastItemRow})`,
+      v: itemRows.slice(1).reduce((s, row) => s + (Number(row[7]) || 0), 0),
+    };
+  }
+
   wsItems["!cols"] = [
-    { wch: 18 },
+    { wch: 16 },
     { wch: 15 },
     { wch: 28 },
     { wch: 16 },
     { wch: 34 },
-    { wch: 12 },
+    { wch: 10 },
     { wch: 18 },
     { wch: 18 },
   ];
-  XLSX.utils.book_append_sheet(workbook, wsItems, "Rincian per Barang");
+  XLSX.utils.book_append_sheet(workbook, wsItems, "Rincian Barang");
 
-  const fileName = `Rekap-LPJ-${sanitizeFileSlug(project.title)}-${todayIsoDate()}.xlsx`;
+  const fileName = `LPJ-${narrative.fileSlug}-${narrative.todayIso}.xlsx`;
   XLSX.writeFile(workbook, fileName);
 }

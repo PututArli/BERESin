@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Kompres Foto Instan",
+  title: "Kompres Banyak Foto Sekaligus",
   description:
-    "Kecilkan ukuran banyak foto sekaligus langsung di peramban secara gratis tanpa batas kuota.",
+    "Kecilkan ukuran puluhan foto sekaligus langsung di HP atau laptop secara gratis tanpa daftar akun.",
 };
 
 export default function KompresLayout({

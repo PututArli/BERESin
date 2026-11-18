@@ -4,7 +4,8 @@ import { isValidWorkspaceId } from "@/lib/security";
 
 const DB_NAME = "beresinhahay_v2";
 const DB_VERSION = 1;
-const WORKSPACE_STORAGE_KEY = "beresinhahay_workspace_id";
+const WORKSPACE_STORAGE_KEY = "beresin_workspace_id";
+const LEGACY_WORKSPACE_KEY = "beresinhahay_workspace_id";
 
 const DEFAULT_CATEGORIES = [
   "Konsumsi",
@@ -14,12 +15,17 @@ const DEFAULT_CATEGORIES = [
   "Lain-lain",
 ];
 
+let cachedDbPromise: Promise<IDBDatabase> | null = null;
+
 export function getOrCreateWorkspaceId(): string {
   if (typeof window === "undefined") {
     return "ws-00000000-0000-4000-8000-000000000000";
   }
-  const existing = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+  const existing =
+    window.localStorage.getItem(WORKSPACE_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_WORKSPACE_KEY);
   if (isValidWorkspaceId(existing)) {
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, existing);
     return existing;
   }
   const generated = `ws-${crypto.randomUUID()}`;
@@ -28,9 +34,12 @@ export function getOrCreateWorkspaceId(): string {
 }
 
 function openLocalDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDbPromise) return cachedDbPromise;
+
+  cachedDbPromise = new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
-      reject(new Error("IndexedDB hanya tersedia di peramban."));
+      cachedDbPromise = null;
+      reject(new Error("Penyimpanan lokal hanya tersedia di peramban."));
       return;
     }
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -47,10 +56,21 @@ function openLocalDb(): Promise<IDBDatabase> {
         db.createObjectStore("settings", { keyPath: "key" });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        cachedDbPromise = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      cachedDbPromise = null;
       reject(request.error ?? new Error("Gagal membuka penyimpanan lokal."));
+    };
   });
+
+  return cachedDbPromise;
 }
 
 function txReq<T>(req: IDBRequest<T>): Promise<T> {
@@ -61,21 +81,32 @@ function txReq<T>(req: IDBRequest<T>): Promise<T> {
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
+  const savedTheme =
+    typeof window !== "undefined"
+      ? window.localStorage.getItem("beresin_theme")
+      : null;
+
   const db = await openLocalDb();
   const tx = db.transaction("settings", "readonly");
   const record = await txReq<{ key: string; value: AppSettings } | undefined>(
     tx.objectStore("settings").get("app_settings")
   );
-  return (
-    record?.value ?? {
-      theme: "light",
-      geminiApiKey: "",
-      defaultPdfGrid: "2x2",
-    }
-  );
+  const base = record?.value ?? {
+    theme: "light",
+    geminiApiKey: "",
+    defaultPdfGrid: "2x2",
+  };
+
+  if (savedTheme === "dark" || savedTheme === "light") {
+    return { ...base, theme: savedTheme };
+  }
+  return base;
 }
 
 export async function saveAppSettings(next: AppSettings): Promise<AppSettings> {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("beresin_theme", next.theme);
+  }
   const db = await openLocalDb();
   const tx = db.transaction("settings", "readwrite");
   await txReq(tx.objectStore("settings").put({ key: "app_settings", value: next }));
@@ -112,45 +143,74 @@ async function listLocalReceipts(workspaceId: string): Promise<Receipt[]> {
   return rows.sort((a, b) => a.referenceNumber.localeCompare(b.referenceNumber));
 }
 
-// Syncs with Supabase PostgreSQL first when online, falling back seamlessly to IndexedDB.
-export async function loadActiveWorkspace(): Promise<{
+// Reads IndexedDB immediately (< 5 ms) so buttons and page load never wait on cloud network latency.
+export async function loadLocalWorkspaceFast(): Promise<{
   project: Project;
   receipts: Receipt[];
-  cloudConnected: boolean;
 }> {
   const workspaceId = getOrCreateWorkspaceId();
-
-  try {
-    const resp = await fetch(
-      `/api/workspace?workspaceId=${encodeURIComponent(workspaceId)}`,
-      { cache: "no-store" }
-    );
-    if (resp.ok) {
-      const json = await resp.json();
-      if (json.cloudEnabled && json.project) {
-        const db = await openLocalDb();
-        const tx = db.transaction(["projects", "receipts"], "readwrite");
-        await txReq(tx.objectStore("projects").put(json.project));
-        const receiptStore = tx.objectStore("receipts");
-        for (const r of json.receipts as Receipt[]) {
-          await txReq(receiptStore.put(r));
-        }
-        return {
-          project: json.project as Project,
-          receipts: json.receipts as Receipt[],
-          cloudConnected: true,
-        };
-      }
-    }
-  } catch {
-    // Fall back to local IndexedDB when offline
-  }
-
   const [project, receipts] = await Promise.all([
     getLocalWorkspaceProject(workspaceId),
     listLocalReceipts(workspaceId),
   ]);
-  return { project, receipts, cloudConnected: false };
+  return { project, receipts };
+}
+
+// Reconciles with Supabase in the background without blocking user interactions.
+export async function syncWorkspaceFromCloud(): Promise<{
+  project: Project;
+  receipts: Receipt[];
+  cloudConnected: boolean;
+} | null> {
+  const workspaceId = getOrCreateWorkspaceId();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6500);
+
+  try {
+    const resp = await fetch(
+      `/api/workspace?workspaceId=${encodeURIComponent(workspaceId)}`,
+      { cache: "no-store", signal: controller.signal }
+    );
+    if (!resp.ok) return null;
+
+    const json = await resp.json();
+    if (!json.cloudEnabled || !json.project) return null;
+
+    const cloudProject = json.project as Project;
+    const cloudReceipts = (json.receipts as Receipt[]) ?? [];
+
+    const db = await openLocalDb();
+    const localReceipts = await listLocalReceipts(workspaceId);
+    const mergedMap = new Map<string, Receipt>();
+    for (const cr of cloudReceipts) {
+      mergedMap.set(cr.id, cr);
+    }
+    for (const lr of localReceipts) {
+      if (!mergedMap.has(lr.id)) {
+        mergedMap.set(lr.id, lr);
+      }
+    }
+    const mergedReceipts = Array.from(mergedMap.values()).sort((a, b) =>
+      a.referenceNumber.localeCompare(b.referenceNumber)
+    );
+
+    const tx = db.transaction(["projects", "receipts"], "readwrite");
+    await txReq(tx.objectStore("projects").put(cloudProject));
+    const receiptStore = tx.objectStore("receipts");
+    for (const r of mergedReceipts) {
+      await txReq(receiptStore.put(r));
+    }
+
+    return {
+      project: cloudProject,
+      receipts: mergedReceipts,
+      cloudConnected: true,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function updateWorkspaceMeta(project: Project): Promise<Project> {
@@ -158,15 +218,13 @@ export async function updateWorkspaceMeta(project: Project): Promise<Project> {
   const tx = db.transaction("projects", "readwrite");
   await txReq(tx.objectStore("projects").put(project));
 
-  try {
-    await fetch("/api/workspace", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...project, workspaceId: project.id }),
-    });
-  } catch {
-    // Keep local state when network is unavailable
-  }
+  // Sync metadata to Supabase in background so typing and downloads stay instant.
+  void fetch("/api/workspace", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...project, workspaceId: project.id }),
+    keepalive: true,
+  }).catch(() => {});
 
   return project;
 }
@@ -206,18 +264,15 @@ export async function saveReceipt(receipt: Receipt): Promise<Receipt> {
   const tx = db.transaction("receipts", "readwrite");
   await txReq(tx.objectStore("receipts").put(finalized));
 
-  try {
-    await fetch("/api/receipts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId: finalized.projectId,
-        receipt: finalized,
-      }),
-    });
-  } catch {
-    // Keep local receipt if cloud sync temporarily fails
-  }
+  // Push receipt to Supabase asynchronously so saving/closing modal never lags.
+  void fetch("/api/receipts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workspaceId: finalized.projectId,
+      receipt: finalized,
+    }),
+  }).catch(() => {});
 
   return finalized;
 }
@@ -230,16 +285,12 @@ export async function deleteReceipt(
   const tx = db.transaction("receipts", "readwrite");
   await txReq(tx.objectStore("receipts").delete(receiptId));
 
-  try {
-    await fetch(
-      `/api/receipts?id=${encodeURIComponent(receiptId)}&workspaceId=${encodeURIComponent(
-        workspaceId
-      )}`,
-      { method: "DELETE" }
-    );
-  } catch {
-    // Ignore network error after local delete
-  }
+  void fetch(
+    `/api/receipts?id=${encodeURIComponent(receiptId)}&workspaceId=${encodeURIComponent(
+      workspaceId
+    )}`,
+    { method: "DELETE", keepalive: true }
+  ).catch(() => {});
 }
 
 export async function clearAllWorkspaceReceipts(workspaceId: string): Promise<void> {
@@ -251,12 +302,8 @@ export async function clearAllWorkspaceReceipts(workspaceId: string): Promise<vo
     await txReq(store.delete(r.id));
   }
 
-  try {
-    await fetch(
-      `/api/receipts?workspaceId=${encodeURIComponent(workspaceId)}`,
-      { method: "DELETE" }
-    );
-  } catch {
-    // Ignore network error after local clear
-  }
+  void fetch(
+    `/api/receipts?workspaceId=${encodeURIComponent(workspaceId)}`,
+    { method: "DELETE", keepalive: true }
+  ).catch(() => {});
 }

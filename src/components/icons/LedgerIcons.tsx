@@ -148,6 +148,27 @@ export function PdfDocumentIcon(props: IconProps) {
   );
 }
 
+export function WordDocumentIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M6 2h9l5 5v15H6V2z" />
+      <path d="M14 2v6h6" />
+      <path d="M8.5 11.5h7M8.5 15h7M8.5 18.5h4.5" />
+    </svg>
+  );
+}
+
 export function ZoomInIcon(props: IconProps) {
   return (
     <svg
@@ -330,6 +351,47 @@ export function QrCodeIcon(props: IconProps) {
       <rect x="14" y="3" width="7" height="7" />
       <rect x="3" y="14" width="7" height="7" />
       <path d="M14 14h3v3h-3zM18 18h3v3h-3zM18 14h3M14 19h2" />
+    </svg>
+  );
+}
+
+export function BookGuideIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M4 4h7l1 1.5L13 4h7v15h-7l-1 1.5L11 19H4V4z" />
+      <path d="M12 5.5v15M7 9h3M7 13h3M14 9h3M14 13h3" />
+    </svg>
+  );
+}
+
+export function RefreshBatchIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="square"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M20 11a8 8 0 0 0-14.5-4.7L4 8" />
+      <path d="M4 3.5V8h4.5" />
+      <path d="M4 13a8 8 0 0 0 14.5 4.7L20 16" />
+      <path d="M20 20.5V16h-4.5" />
     </svg>
   );
 }
