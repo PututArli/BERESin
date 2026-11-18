@@ -180,9 +180,9 @@ export async function exportProjectToPdfLpj(
     ],
     body: [
       [
-        formatRupiah(narrative.initialBudget),
+        narrative.initialBudgetDisplay,
         formatRupiah(narrative.totalSpent),
-        formatRupiah(narrative.remainingBalance),
+        narrative.remainingBalanceDisplay,
         `${receipts.length} Nota`,
       ],
     ],

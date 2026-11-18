@@ -27,9 +27,15 @@ export function exportProjectToExcel(project: Project, receipts: Receipt[]): voi
     [sanitizeSpreadsheetCell(narrative.closingParagraph)],
     [],
     ["RINGKASAN DANA"],
-    ["Dana Awal / Pemasukan (Rp)", narrative.initialBudget],
+    [
+      "Dana Awal / Pemasukan (Rp)",
+      narrative.hasInitialBudget ? narrative.initialBudget : "-",
+    ],
     ["Total Pengeluaran (Rp)", narrative.totalSpent],
-    ["Sisa / Selisih Dana (Rp)", narrative.remainingBalance],
+    [
+      "Sisa / Selisih Dana (Rp)",
+      narrative.hasInitialBudget ? narrative.remainingBalance : "-",
+    ],
     [
       "Jumlah Bukti Nota",
       `${receipts.length} nota (${narrative.verifiedCount} sudah dicek)`,

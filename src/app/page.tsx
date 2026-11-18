@@ -1,35 +1,14 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import imageCompression from "browser-image-compression";
-import type {
-  ExtractionMode,
-  OcrExtractedPayload,
-  PdfGridDensity,
-  Project,
-  Receipt,
-} from "@/types/beresin";
+import type { PdfGridDensity, Project, Receipt } from "@/types/beresin";
 import {
-  clearAllWorkspaceReceipts,
-  deleteReceipt,
-  loadLocalWorkspaceFast,
-  nextReferenceNumber,
-  saveReceipt,
-  syncWorkspaceFromCloud,
-  updateWorkspaceMeta,
-} from "@/lib/storage";
-import {
-  computeBlobHash,
-  findDuplicateReceipt,
   formatRupiah,
   formatShortDateId,
   parseIndonesianMoneyInput,
-  todayIsoDate,
 } from "@/lib/format";
 import { computeLpjNarrative } from "@/lib/lpj-narrative";
-import { verifyImageMagicBytes } from "@/lib/security";
-import { createManualNoteDataUrl } from "@/lib/manual-note-image";
 import { exportProjectToExcel } from "@/lib/export-excel";
 import { exportProjectToPdfLpj } from "@/lib/export-pdf";
 import {
@@ -52,28 +31,30 @@ import {
   WordDocumentIcon,
 } from "@/components/icons/LedgerIcons";
 
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("Gagal membaca berkas gambar."));
-    reader.readAsDataURL(blob);
-  });
-}
-
 export default function HomePage() {
-  const { settings, announcePolite } = useLedger();
+  const {
+    announcePolite,
+    project,
+    receipts,
+    viewState,
+    receiptError,
+    extractionMode,
+    setExtractionModeSafe,
+    uploadingReceipts,
+    receiptProgress,
+    reloadWorkspace,
+    updateProjectFields,
+    processReceiptFiles,
+    cancelReceiptUpload,
+    reanalyzeReceipt,
+    addManualReceipt,
+    saveVerifiedReceipt,
+    deleteOneReceipt,
+    clearAllReceipts,
+  } = useLedger();
 
-  const [project, setProject] = useState<Project | null>(null);
-  const [receipts, setReceipts] = useState<Receipt[]>([]);
-  const [viewState, setViewState] = useState<"loading" | "ready" | "error">("loading");
-  const [errorText, setErrorText] = useState("");
-
-  const [extractionMode, setExtractionMode] = useState<ExtractionMode>("detailed");
   const [pdfGrid, setPdfGrid] = useState<PdfGridDensity>("2x2");
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadStatusText, setUploadStatusText] = useState("");
   const [busyExport, setBusyExport] = useState<"pdf" | "docx" | null>(null);
 
   const [titleInput, setTitleInput] = useState("Laporan Pengeluaran Kegiatan");
@@ -82,51 +63,17 @@ export default function HomePage() {
   const [treasurerInput, setTreasurerInput] = useState("");
 
   const [activeReceiptId, setActiveReceiptId] = useState<string | null>(null);
-
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const userMutatedRef = useRef(false);
-
-  const loadData = useCallback(async () => {
-    setErrorText("");
-    try {
-      const localData = await loadLocalWorkspaceFast();
-      setProject(localData.project);
-      setReceipts(localData.receipts);
-      setTitleInput(localData.project.title);
-      setBudgetInput(
-        localData.project.initialBudget > 0
-          ? String(localData.project.initialBudget)
-          : ""
-      );
-      setChairpersonInput(localData.project.chairpersonName || "");
-      setTreasurerInput(localData.project.treasurerName || "");
-      setViewState("ready");
-
-      // Reconcile with Supabase in background without delaying initial render or clicks.
-      void syncWorkspaceFromCloud().then((cloudData) => {
-        if (!cloudData || userMutatedRef.current) return;
-        setProject(cloudData.project);
-        setReceipts(cloudData.receipts);
-        setTitleInput(cloudData.project.title);
-        setBudgetInput(
-          cloudData.project.initialBudget > 0
-            ? String(cloudData.project.initialBudget)
-            : ""
-        );
-        setChairpersonInput(cloudData.project.chairpersonName || "");
-        setTreasurerInput(cloudData.project.treasurerName || "");
-      });
-    } catch (err) {
-      setErrorText(
-        err instanceof Error ? err.message : "Gagal memuat daftar nota."
-      );
-      setViewState("error");
-    }
-  }, []);
+  const initializedProjectIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    if (!project || initializedProjectIdRef.current === project.id) return;
+    initializedProjectIdRef.current = project.id;
+    setTitleInput(project.title);
+    setBudgetInput(project.initialBudget > 0 ? String(project.initialBudget) : "");
+    setChairpersonInput(project.chairpersonName || "");
+    setTreasurerInput(project.treasurerName || "");
+  }, [project]);
 
   const liveProject = useMemo<Project | null>(() => {
     if (!project) return null;
@@ -154,380 +101,64 @@ export default function HomePage() {
     [receipts]
   );
 
-  function saveHeaderInBackground(): Project | null {
-    if (!liveProject) return null;
-    userMutatedRef.current = true;
-    setProject(liveProject);
-    void updateWorkspaceMeta(liveProject);
-    return liveProject;
+  function flushHeaderFields(): Project | null {
+    return updateProjectFields({
+      title: titleInput.trim() || "Laporan Pengeluaran Kegiatan",
+      initialBudget: parseIndonesianMoneyInput(budgetInput),
+      chairpersonName: chairpersonInput.trim(),
+      treasurerName: treasurerInput.trim(),
+    });
   }
 
-  const requestOcrExtraction = useCallback(
-    async (
-      imageDataUrl: string,
-      mimeType: string,
-      fileName: string,
-      categories: string[],
-      mode: ExtractionMode
-    ): Promise<{
-      extracted: OcrExtractedPayload | null;
-      aiUsed: boolean;
-      errorDetail: string | null;
-    }> => {
-      try {
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (settings.geminiApiKey.trim()) {
-          headers["x-gemini-api-key"] = settings.geminiApiKey.trim();
-        }
-
-        const resp = await fetch("/api/ocr", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            imageBase64: imageDataUrl,
-            mimeType: mimeType || "image/jpeg",
-            fileName,
-            categories,
-            extractionMode: mode,
-          }),
-        });
-
-        const json = await resp.json().catch(() => ({}));
-        if (resp.ok && json?.data) {
-          return {
-            extracted: json.data as OcrExtractedPayload,
-            aiUsed: Boolean(json.aiUsed),
-            errorDetail: null,
-          };
-        }
-
-        return {
-          extracted: null,
-          aiUsed: false,
-          errorDetail:
-            typeof json?.error === "string"
-              ? json.error
-              : "Analisis foto belum berhasil dijalankan.",
-        };
-      } catch {
-        return {
-          extracted: null,
-          aiUsed: false,
-          errorDetail: "Gagal terhubung ke server pembaca struk.",
-        };
-      }
-    },
-    [settings.geminiApiKey]
-  );
-
-  async function processFiles(fileList: FileList | File[] | null) {
-    if (!fileList || !project) return;
-    const rawCandidates = Array.from(fileList);
-    if (rawCandidates.length === 0) return;
-
-    const verifiedFiles: File[] = [];
-    let skippedCount = 0;
-    for (const candidate of rawCandidates) {
-      const isGenuineImage = await verifyImageMagicBytes(candidate);
-      if (isGenuineImage) {
-        verifiedFiles.push(candidate);
-      } else {
-        skippedCount += 1;
-      }
+  async function handleFileSelection(files: FileList | null) {
+    if (!files || uploadingReceipts) return;
+    const { firstZeroReceiptId } = await processReceiptFiles(files);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
-
-    if (verifiedFiles.length === 0) {
-      setErrorText("Format ditolak: gunakan foto JPG, PNG, atau WebP (maks. 25 MB).");
-      return;
-    }
-
-    userMutatedRef.current = true;
-    let noticeMessage =
-      skippedCount > 0
-        ? `${skippedCount} file dilewati (hanya menerima JPG, PNG, WebP maks. 25 MB).`
-        : "";
-    setErrorText(noticeMessage);
-    setUploading(true);
-    let firstAddedId: string | null = null;
-    const createdList: Receipt[] = [];
-
-    try {
-      for (let i = 0; i < verifiedFiles.length; i += 1) {
-        const file = verifiedFiles[i];
-        setUploadStatusText(`Membaca ${i + 1}/${verifiedFiles.length}: ${file.name}`);
-
-        let compressed: Blob = file;
-        try {
-          // Keep 2048px resolution so tall supermarket/thermal receipts stay sharp for OCR.
-          compressed = await imageCompression(file, {
-            maxSizeMB: 1.8,
-            maxWidthOrHeight: 2048,
-            initialQuality: 0.88,
-            fileType: "image/jpeg",
-            useWebWorker: false,
-          });
-        } catch {
-          compressed = file;
-        }
-
-        const [dataUrl, imageHash, refNum] = await Promise.all([
-          blobToDataUrl(compressed),
-          computeBlobHash(compressed),
-          nextReferenceNumber(project.id),
-        ]);
-
-        const receiptId = crypto.randomUUID();
-        if (!firstAddedId) firstAddedId = receiptId;
-
-        const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
-          dataUrl,
-          compressed.type || "image/jpeg",
-          file.name,
-          project.categories,
-          extractionMode
-        );
-
-        if (errorDetail) {
-          noticeMessage = errorDetail;
-        }
-
-        const confidence = extracted?.confidence_score ?? 0.5;
-        const autoVerified =
-          aiUsed && confidence >= 0.85 && (extracted?.total_amount ?? 0) > 0;
-
-        const nextItem: Receipt = {
-          id: receiptId,
-          projectId: project.id,
-          referenceNumber: refNum,
-          imageUrl: dataUrl,
-          imageHash,
-          extractionMode,
-          merchantName: extracted?.merchant_name || "Struk Belum Terbaca",
-          transactionDate: extracted?.transaction_date ?? todayIsoDate(),
-          category:
-            extracted?.category && project.categories.includes(extracted.category)
-              ? extracted.category
-              : project.categories[0] ?? "Lain-lain",
-          subtotal: extracted?.subtotal ?? extracted?.total_amount ?? 0,
-          taxAndService: extracted?.tax_and_service ?? 0,
-          discount: extracted?.discount ?? 0,
-          totalAmount: extracted?.total_amount ?? 0,
-          paymentMethod: extracted?.payment_method ?? "Tunai",
-          confidenceScore: confidence,
-          warningMessage: extracted?.warning_message ?? errorDetail ?? null,
-          isDuplicate: false,
-          duplicateOfRef: null,
-          status: autoVerified ? "verified" : "needs_review",
-          notes: "",
-          items: (extracted?.items ?? []).map((it) => ({
-            id: crypto.randomUUID(),
-            receiptId,
-            itemName: it.item_name,
-            quantity: it.quantity,
-            unitPrice: it.unit_price,
-            totalPrice: it.total_price,
-          })),
-          createdAt: new Date().toISOString(),
-        };
-
-        const saved = await saveReceipt(nextItem);
-        createdList.push(saved);
-      }
-
-      if (noticeMessage) {
-        setErrorText(noticeMessage);
-      }
-
-      setReceipts((prev) =>
-        [...prev, ...createdList].sort((a, b) =>
-          a.referenceNumber.localeCompare(b.referenceNumber)
-        )
-      );
-      announcePolite(`${createdList.length} nota ditambahkan.`);
-
-      if (createdList.length === 1 && createdList[0].totalAmount === 0 && firstAddedId) {
-        setActiveReceiptId(firstAddedId);
-      }
-    } finally {
-      setUploading(false);
-      setUploadStatusText("");
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+    if (firstZeroReceiptId) {
+      setActiveReceiptId(firstZeroReceiptId);
     }
   }
 
-  const handleReanalyzeReceipt = useCallback(
-    async (targetReceipt: Receipt): Promise<Receipt | null> => {
-      if (!project) return null;
-      const mimeMatch = targetReceipt.imageUrl.match(/^data:(image\/[a-z+]+);base64,/i);
-      const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
-
-      const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
-        targetReceipt.imageUrl,
-        mime,
-        targetReceipt.referenceNumber,
-        project.categories,
-        targetReceipt.extractionMode || extractionMode
-      );
-
-      if (!extracted) {
-        throw new Error(errorDetail ?? "Gagal membaca ulang foto.");
-      }
-
-      const confidence = extracted.confidence_score ?? 0.85;
-      const autoVerified =
-        aiUsed && confidence >= 0.85 && (extracted.total_amount ?? 0) > 0;
-
-      const refreshed: Receipt = {
-        ...targetReceipt,
-        merchantName: extracted.merchant_name || targetReceipt.merchantName,
-        transactionDate: extracted.transaction_date ?? targetReceipt.transactionDate,
-        category:
-          extracted.category && project.categories.includes(extracted.category)
-            ? extracted.category
-            : targetReceipt.category,
-        subtotal: extracted.subtotal ?? extracted.total_amount ?? 0,
-        taxAndService: extracted.tax_and_service ?? 0,
-        discount: extracted.discount ?? 0,
-        totalAmount: extracted.total_amount ?? 0,
-        paymentMethod: extracted.payment_method ?? "Tunai",
-        confidenceScore: confidence,
-        warningMessage: extracted.warning_message ?? null,
-        status: autoVerified ? "verified" : "needs_review",
-        items: (extracted.items ?? []).map((it) => ({
-          id: crypto.randomUUID(),
-          receiptId: targetReceipt.id,
-          itemName: it.item_name,
-          quantity: it.quantity,
-          unitPrice: it.unit_price,
-          totalPrice: it.total_price,
-        })),
-      };
-
-      userMutatedRef.current = true;
-      setReceipts((prev) =>
-        prev.map((r) => (r.id === refreshed.id ? refreshed : r))
-      );
-      void saveReceipt(refreshed);
-      announcePolite(`Nota ${refreshed.referenceNumber} diperbarui.`);
-      return refreshed;
-    },
-    [announcePolite, extractionMode, project, requestOcrExtraction]
-  );
-
-  async function handleAddManualReceipt() {
-    if (!project) return;
-    userMutatedRef.current = true;
-    const refNum = await nextReferenceNumber(project.id);
-    const receiptId = crypto.randomUUID();
-    const dateToday = todayIsoDate();
-    const blankImg = createManualNoteDataUrl(refNum, dateToday);
-
-    const draft: Receipt = {
-      id: receiptId,
-      projectId: project.id,
-      referenceNumber: refNum,
-      imageUrl: blankImg,
-      imageHash: `manual-${receiptId}`,
-      extractionMode: "detailed",
-      merchantName: "Pengeluaran Manual",
-      transactionDate: dateToday,
-      category: project.categories[0] ?? "Lain-lain",
-      subtotal: 0,
-      taxAndService: 0,
-      discount: 0,
-      totalAmount: 0,
-      paymentMethod: "Tunai",
-      confidenceScore: 1,
-      warningMessage: null,
-      isDuplicate: false,
-      duplicateOfRef: null,
-      status: "needs_review",
-      notes: "",
-      items: [
-        {
-          id: crypto.randomUUID(),
-          receiptId,
-          itemName: "",
-          quantity: 1,
-          unitPrice: 0,
-          totalPrice: 0,
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    };
-
-    setReceipts((prev) => [...prev, draft]);
-    setActiveReceiptId(receiptId);
-    void saveReceipt(draft);
+  async function handleManualClick() {
+    const newId = await addManualReceipt();
+    if (newId) setActiveReceiptId(newId);
   }
 
-  async function handleSaveVerified(updated: Receipt, moveNext: boolean) {
-    userMutatedRef.current = true;
-    const dupRef = findDuplicateReceipt(
-      {
-        id: updated.id,
-        imageHash: updated.imageHash,
-        transactionDate: updated.transactionDate,
-        totalAmount: updated.totalAmount,
-        merchantName: updated.merchantName,
-      },
-      receipts
-    );
-    const finalized: Receipt = {
-      ...updated,
-      isDuplicate: Boolean(dupRef),
-      duplicateOfRef: dupRef,
-    };
-
-    const nextList = receipts.map((r) => (r.id === finalized.id ? finalized : r));
-    setReceipts(nextList);
-    announcePolite(`Nota ${finalized.referenceNumber} disimpan.`);
-    void saveReceipt(finalized);
+  async function handleModalSave(updated: Receipt, moveNext: boolean) {
+    saveVerifiedReceipt(updated);
 
     if (!moveNext) {
       setActiveReceiptId(null);
       return;
     }
 
-    const idx = nextList.findIndex((r) => r.id === finalized.id);
+    const idx = receipts.findIndex((r) => r.id === updated.id);
     const nextTarget =
-      nextList.find((r, i) => i > idx && r.status === "needs_review") ??
-      nextList.find((r) => r.id !== finalized.id && r.status === "needs_review") ??
+      receipts.find((r, i) => i > idx && r.status === "needs_review") ??
+      receipts.find((r) => r.id !== updated.id && r.status === "needs_review") ??
       null;
 
     setActiveReceiptId(nextTarget ? nextTarget.id : null);
   }
 
-  function handleDeleteOne(id: string) {
-    if (!project) return;
-    userMutatedRef.current = true;
-    setReceipts((prev) => prev.filter((r) => r.id !== id));
+  function handleDelete(id: string) {
     if (activeReceiptId === id) setActiveReceiptId(null);
-    announcePolite("Nota dihapus.");
-    void deleteReceipt(id, project.id);
-  }
-
-  function handleClearAll() {
-    if (!project) return;
-    userMutatedRef.current = true;
-    setReceipts([]);
-    announcePolite("Daftar nota dibersihkan.");
-    void clearAllWorkspaceReceipts(project.id);
+    deleteOneReceipt(id);
   }
 
   function handleDownloadExcel() {
-    const snap = saveHeaderInBackground();
+    if (uploadingReceipts) return;
+    const snap = flushHeaderFields();
     if (!snap) return;
     exportProjectToExcel(snap, receipts);
     announcePolite("Excel diunduh.");
   }
 
   async function handleDownloadPdf() {
-    const snap = saveHeaderInBackground();
+    if (uploadingReceipts) return;
+    const snap = flushHeaderFields();
     if (!snap) return;
     setBusyExport("pdf");
     try {
@@ -539,7 +170,8 @@ export default function HomePage() {
   }
 
   async function handleDownloadDocx() {
-    const snap = saveHeaderInBackground();
+    if (uploadingReceipts) return;
+    const snap = flushHeaderFields();
     if (!snap) return;
     setBusyExport("docx");
     try {
@@ -551,22 +183,33 @@ export default function HomePage() {
   }
 
   function handleDownloadCsv() {
-    const snap = saveHeaderInBackground();
+    if (uploadingReceipts) return;
+    const snap = flushHeaderFields();
     if (!snap) return;
     exportProjectToCsv(snap, receipts);
   }
 
   function handleDownloadHtml() {
-    const snap = saveHeaderInBackground();
+    if (uploadingReceipts) return;
+    const snap = flushHeaderFields();
     if (!snap) return;
     exportProjectToHtml(snap, receipts);
   }
 
   function handleDownloadTxt() {
-    const snap = saveHeaderInBackground();
+    if (uploadingReceipts) return;
+    const snap = flushHeaderFields();
     if (!snap) return;
     exportProjectToTxt(snap, receipts);
   }
+
+  const progressPct = receiptProgress
+    ? Math.round(
+        (receiptProgress.current / Math.max(1, receiptProgress.total)) * 100
+      )
+    : 0;
+
+  const exportLocked = uploadingReceipts || busyExport !== null;
 
   return (
     <div className="max-w-4xl mx-auto px-3.5 sm:px-6 py-5 sm:py-9 space-y-5 sm:space-y-6">
@@ -593,15 +236,15 @@ export default function HomePage() {
         aria-label="Unggah foto struk"
         onDragOver={(e) => {
           e.preventDefault();
-          setIsDraggingOver(true);
+          if (!uploadingReceipts) setIsDraggingOver(true);
         }}
         onDragLeave={() => setIsDraggingOver(false)}
         onDrop={(e) => {
           e.preventDefault();
           setIsDraggingOver(false);
-          void processFiles(e.dataTransfer.files);
+          if (!uploadingReceipts) void handleFileSelection(e.dataTransfer.files);
         }}
-        className={`rounded-[8px] border-2 border-dashed p-4 sm:p-7 text-center transition-colors ${
+        className={`rounded-[8px] border-2 border-dashed p-4 sm:p-6 text-center transition-colors ${
           isDraggingOver
             ? "bg-[var(--verified-bg)] border-[var(--border-strong)]"
             : "bg-[var(--bg-surface)] border-[var(--border-control)]"
@@ -613,78 +256,134 @@ export default function HomePage() {
           type="file"
           accept="image/jpeg,image/png,image/webp"
           multiple
-          disabled={uploading || viewState === "loading"}
-          onChange={(e) => void processFiles(e.target.files)}
+          disabled={uploadingReceipts || viewState === "loading"}
+          onChange={(e) => void handleFileSelection(e.target.files)}
           className="sr-only"
         />
 
-        <div className="max-w-md mx-auto space-y-3.5">
-          <div className="space-y-1.5">
+        <div className="max-w-lg mx-auto space-y-4">
+          <fieldset
+            disabled={uploadingReceipts}
+            className="space-y-1.5 text-left"
+          >
+            <legend className="text-xs font-bold uppercase text-[var(--ink-secondary)] text-center w-full mb-1">
+              {uploadingReceipts
+                ? "Mode baca struk (terkunci saat memproses):"
+                : "1. Pilih mode baca struk sebelum unggah:"}
+            </legend>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={uploadingReceipts}
+                aria-pressed={extractionMode === "detailed"}
+                onClick={() => setExtractionModeSafe("detailed")}
+                className={`min-h-[48px] px-3 py-2 rounded-[6px] border text-left transition-colors ${
+                  extractionMode === "detailed"
+                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                    : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
+                }`}
+              >
+                <span className="block text-xs sm:text-sm font-bold leading-tight">
+                  Rincian Barang
+                </span>
+                <span className="block text-[11px] opacity-90 mt-0.5 leading-tight">
+                  Catat tiap barang &amp; harga
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={uploadingReceipts}
+                aria-pressed={extractionMode === "summary"}
+                onClick={() => setExtractionModeSafe("summary")}
+                className={`min-h-[48px] px-3 py-2 rounded-[6px] border text-left transition-colors ${
+                  extractionMode === "summary"
+                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
+                    : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
+                }`}
+              >
+                <span className="block text-xs sm:text-sm font-bold leading-tight">
+                  Hanya Total
+                </span>
+                <span className="block text-[11px] opacity-90 mt-0.5 leading-tight">
+                  Cukup toko, tanggal &amp; total
+                </span>
+              </button>
+            </div>
+          </fieldset>
+
+          <div className="pt-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2">
             <label
               htmlFor="input-upload-nota-utama"
-              className={`btn-stamp text-sm sm:text-base px-5 py-2.5 w-full sm:w-auto ${
-                uploading ? "opacity-60 pointer-events-none" : ""
+              aria-disabled={uploadingReceipts || viewState === "loading"}
+              className={`btn-stamp text-sm px-5 py-2.5 flex-1 sm:flex-initial ${
+                uploadingReceipts || viewState === "loading"
+                  ? "opacity-60 pointer-events-none"
+                  : ""
               }`}
             >
               <UploadStackIcon className="w-5 h-5 shrink-0" />
               <span>
-                {uploading ? "Menganalisis Foto..." : "Pilih Foto Struk"}
+                {uploadingReceipts ? "Sedang Memproses..." : "2. Pilih Foto Struk"}
               </span>
             </label>
 
-            <p className="text-xs text-[var(--ink-secondary)]">
-              Bisa banyak sekaligus · JPG, PNG, WebP (maks. 25 MB)
-            </p>
-          </div>
-
-          <div className="pt-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2">
-            <fieldset className="grid grid-cols-2 sm:inline-flex p-0.5 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-control)]">
-              <legend className="sr-only">Detail pencatatan struk</legend>
-              <button
-                type="button"
-                aria-pressed={extractionMode === "detailed"}
-                onClick={() => setExtractionMode("detailed")}
-                className={`min-h-[44px] px-3 rounded-[5px] text-xs font-semibold ${
-                  extractionMode === "detailed"
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)]"
-                    : "text-[var(--ink-primary)]"
-                }`}
-              >
-                Per Barang
-              </button>
-              <button
-                type="button"
-                aria-pressed={extractionMode === "summary"}
-                onClick={() => setExtractionMode("summary")}
-                className={`min-h-[44px] px-3 rounded-[5px] text-xs font-semibold ${
-                  extractionMode === "summary"
-                    ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)]"
-                    : "text-[var(--ink-primary)]"
-                }`}
-              >
-                Total Saja
-              </button>
-            </fieldset>
-
             <button
               type="button"
-              disabled={uploading}
-              onClick={() => void handleAddManualReceipt()}
-              className="btn-secondary text-xs !px-3"
+              disabled={uploadingReceipts || viewState === "loading"}
+              onClick={() => void handleManualClick()}
+              className="btn-secondary text-xs !px-3.5"
             >
               <PlusBoxIcon className="w-4 h-4 shrink-0" />
               <span>Input Manual</span>
             </button>
           </div>
+
+          <p className="text-xs text-[var(--ink-secondary)]">
+            Bisa banyak foto sekaligus · JPG, PNG, WebP (maks. 25 MB)
+          </p>
         </div>
 
-        {uploading && uploadStatusText && (
+        {uploadingReceipts && receiptProgress && (
           <div
             role="status"
             aria-live="polite"
-            className="mt-4 p-2.5 rounded-[6px] bg-[var(--bg-subtle)] border border-[var(--border-card)] text-xs font-mono-tabular text-[var(--ink-primary)] max-w-md mx-auto truncate"
+            className="mt-4 p-3 rounded-[6px] bg-[var(--bg-subtle)] border border-[var(--border-card)] text-left max-w-lg mx-auto space-y-2"
           >
-            {uploadStatusText}
+            <div className="flex items-center justify-between gap-2 text-xs font-mono-tabular text-[var(--ink-primary)]">
+              <span className="truncate">
+                [{receiptProgress.mode === "detailed" ? "Rincian" : "Total"}]{" "}
+                <strong>{receiptProgress.fileName}</strong>
+              </span>
+              <span className="shrink-0 font-bold">
+                {receiptProgress.current}/{receiptProgress.total}
+              </span>
+            </div>
+            <div
+              role="progressbar"
+              aria-label="Progres pembacaan struk"
+              aria-valuenow={receiptProgress.current}
+              aria-valuemin={0}
+              aria-valuemax={receiptProgress.total}
+              className="h-2 w-full rounded-[3px] bg-[var(--bg-paper)] border border-[var(--border-control)] overflow-hidden"
+            >
+              <div
+                className="h-full bg-[var(--color-ledger)]"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <span className="text-[11px] text-[var(--ink-secondary)]">
+                Tetap berjalan meski Anda pindah menu.
+              </span>
+              <button
+                type="button"
+                onClick={cancelReceiptUpload}
+                className="btn-secondary !py-1 !px-2.5 text-xs"
+              >
+                Batalkan
+              </button>
+            </div>
           </div>
         )}
       </section>
@@ -699,7 +398,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {errorText && (
+      {receiptError && (
         <div
           role="alert"
           className="p-3.5 rounded-[8px] border-2 flex flex-wrap items-center justify-between gap-2 text-xs sm:text-sm"
@@ -711,12 +410,12 @@ export default function HomePage() {
         >
           <div className="flex items-start gap-2 font-semibold">
             <AlertTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{errorText}</span>
+            <span>{receiptError}</span>
           </div>
           {viewState === "error" && (
             <button
               type="button"
-              onClick={() => void loadData()}
+              onClick={() => void reloadWorkspace()}
               className="btn-secondary text-xs !py-1.5 !px-3"
             >
               Muat Ulang
@@ -741,7 +440,7 @@ export default function HomePage() {
                 maxLength={140}
                 value={titleInput}
                 onChange={(e) => setTitleInput(e.target.value)}
-                onBlur={() => saveHeaderInBackground()}
+                onBlur={() => flushHeaderFields()}
                 placeholder="Laporan Keuangan Kegiatan"
                 className="input-ledger font-semibold text-sm"
               />
@@ -750,7 +449,7 @@ export default function HomePage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 type="button"
-                disabled={busyExport !== null}
+                disabled={exportLocked}
                 onClick={() => void handleDownloadPdf()}
                 className="btn-stamp w-full text-sm"
               >
@@ -760,7 +459,7 @@ export default function HomePage() {
 
               <button
                 type="button"
-                disabled={busyExport !== null}
+                disabled={exportLocked}
                 onClick={() => void handleDownloadDocx()}
                 className="btn-ledger w-full text-sm"
               >
@@ -770,6 +469,7 @@ export default function HomePage() {
 
               <button
                 type="button"
+                disabled={exportLocked}
                 onClick={handleDownloadExcel}
                 className="btn-secondary w-full text-sm"
               >
@@ -781,6 +481,7 @@ export default function HomePage() {
             <div className="grid grid-cols-3 gap-2 pt-1">
               <button
                 type="button"
+                disabled={exportLocked}
                 onClick={handleDownloadCsv}
                 className="btn-secondary !py-1.5 !px-2 text-xs"
               >
@@ -788,6 +489,7 @@ export default function HomePage() {
               </button>
               <button
                 type="button"
+                disabled={exportLocked}
                 onClick={handleDownloadHtml}
                 className="btn-secondary !py-1.5 !px-2 text-xs"
               >
@@ -795,6 +497,7 @@ export default function HomePage() {
               </button>
               <button
                 type="button"
+                disabled={exportLocked}
                 onClick={handleDownloadTxt}
                 className="btn-secondary !py-1.5 !px-2 text-xs"
               >
@@ -822,7 +525,7 @@ export default function HomePage() {
                       maxLength={20}
                       value={budgetInput}
                       onChange={(e) => setBudgetInput(e.target.value)}
-                      onBlur={() => saveHeaderInBackground()}
+                      onBlur={() => flushHeaderFields()}
                       placeholder="Opsional"
                       className="input-ledger font-mono-tabular text-sm"
                     />
@@ -840,7 +543,7 @@ export default function HomePage() {
                       maxLength={100}
                       value={chairpersonInput}
                       onChange={(e) => setChairpersonInput(e.target.value)}
-                      onBlur={() => saveHeaderInBackground()}
+                      onBlur={() => flushHeaderFields()}
                       placeholder="Opsional"
                       className="input-ledger text-sm"
                     />
@@ -858,7 +561,7 @@ export default function HomePage() {
                       maxLength={100}
                       value={treasurerInput}
                       onChange={(e) => setTreasurerInput(e.target.value)}
-                      onBlur={() => saveHeaderInBackground()}
+                      onBlur={() => flushHeaderFields()}
                       placeholder="Opsional"
                       className="input-ledger text-sm"
                     />
@@ -921,7 +624,8 @@ export default function HomePage() {
 
             <button
               type="button"
-              onClick={handleClearAll}
+              disabled={uploadingReceipts}
+              onClick={clearAllReceipts}
               className="btn-secondary !py-1.5 !px-2.5 text-xs shrink-0"
             >
               <TrashBinIcon className="w-4 h-4 shrink-0" />
@@ -1005,7 +709,8 @@ export default function HomePage() {
 
                     <button
                       type="button"
-                      onClick={() => handleDeleteOne(r.id)}
+                      disabled={uploadingReceipts}
+                      onClick={() => handleDelete(r.id)}
                       aria-label={`Hapus ${r.referenceNumber}`}
                       className="btn-secondary !p-2 min-w-[44px]"
                     >
@@ -1026,9 +731,9 @@ export default function HomePage() {
           activeReceiptId={activeReceiptId}
           onClose={() => setActiveReceiptId(null)}
           onSelectReceipt={(id) => setActiveReceiptId(id)}
-          onSaveReceipt={handleSaveVerified}
-          onDeleteReceipt={async (id) => handleDeleteOne(id)}
-          onReanalyzeReceipt={handleReanalyzeReceipt}
+          onSaveReceipt={handleModalSave}
+          onDeleteReceipt={async (id) => handleDelete(id)}
+          onReanalyzeReceipt={reanalyzeReceipt}
         />
       )}
     </div>

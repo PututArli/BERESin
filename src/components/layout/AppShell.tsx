@@ -16,7 +16,14 @@ import {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { settings, toggleTheme } = useLedger();
+  const {
+    settings,
+    toggleTheme,
+    uploadingReceipts,
+    receiptProgress,
+    compressProcessing,
+    compressProgress,
+  } = useLedger();
 
   const [donateOpen, setDonateOpen] = useState(false);
   const donateModalRef = useRef<HTMLDivElement | null>(null);
@@ -183,6 +190,52 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
       </header>
+
+      {uploadingReceipts && receiptProgress && pathname !== "/" && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="bg-[var(--verified-bg)] border-b border-[var(--verified-border)] px-3.5 sm:px-6 py-2"
+        >
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-2 text-xs">
+            <span
+              className="font-mono-tabular font-semibold truncate"
+              style={{ color: "var(--verified-ink)" }}
+            >
+              Membaca struk {receiptProgress.current}/{receiptProgress.total} di latar belakang...
+            </span>
+            <Link
+              href="/"
+              className="btn-secondary !py-1 !px-3 text-xs no-underline shrink-0"
+            >
+              Lihat Progres
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {compressProcessing && compressProgress && !pathname.startsWith("/kompres") && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="bg-[var(--verified-bg)] border-b border-[var(--verified-border)] px-3.5 sm:px-6 py-2"
+        >
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-2 text-xs">
+            <span
+              className="font-mono-tabular font-semibold truncate"
+              style={{ color: "var(--verified-ink)" }}
+            >
+              Mengompres foto {compressProgress.current}/{compressProgress.total} di latar belakang...
+            </span>
+            <Link
+              href="/kompres"
+              className="btn-secondary !py-1 !px-3 text-xs no-underline shrink-0"
+            >
+              Lihat Progres
+            </Link>
+          </div>
+        </div>
+      )}
 
       <main id="konten-utama" tabIndex={-1} className="flex-1 outline-none">
         {children}

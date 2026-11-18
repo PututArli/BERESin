@@ -163,7 +163,8 @@ function extractJsonTextFromGemini(geminiJson: unknown): string | null {
 function normalizeOcrOutput(
   raw: OcrExtractedPayload,
   allowedCategories: string[],
-  currentYear: number
+  currentYear: number,
+  extractionMode: ExtractionMode
 ): OcrExtractedPayload {
   const fallbackCategory = allowedCategories[0] ?? "Lain-lain";
   const matchedCat =
@@ -171,7 +172,7 @@ function normalizeOcrOutput(
       (c) => c.toLowerCase() === String(raw.category ?? "").trim().toLowerCase()
     ) ?? fallbackCategory;
 
-  const cleanedItems = (Array.isArray(raw.items) ? raw.items : [])
+  let cleanedItems = (Array.isArray(raw.items) ? raw.items : [])
     .slice(0, 150)
     .map((it) => {
       const name = sanitizePlainText(it?.item_name, 160);
@@ -194,24 +195,49 @@ function normalizeOcrOutput(
     })
     .filter((it) => it.item_name !== "" || it.total_price > 0);
 
-  const itemsSum = cleanedItems.reduce((sum, it) => sum + it.total_price, 0);
-  const tax = sanitizeMoneyAmount(raw.tax_and_service);
+  let tax = sanitizeMoneyAmount(raw.tax_and_service);
   const discount = sanitizeMoneyAmount(raw.discount);
-  const subtotal = sanitizeMoneyAmount(raw.subtotal) || itemsSum;
   let totalAmount = sanitizeMoneyAmount(raw.total_amount);
 
+  let itemsSum = cleanedItems.reduce((sum, it) => sum + it.total_price, 0);
   if (totalAmount === 0 && itemsSum > 0) {
     totalAmount = Math.max(0, itemsSum + tax - discount);
   }
 
-  if (cleanedItems.length === 0 && totalAmount > 0) {
-    cleanedItems.push({
-      item_name: sanitizePlainText(raw.merchant_name, 120) || "Total belanja struk",
-      quantity: 1,
-      unit_price: totalAmount,
-      total_price: totalAmount,
-    });
+  // Prevent double-counting tax when retail item prices already include PPN ("PPN Termasuk").
+  if (totalAmount > 0 && itemsSum === totalAmount && tax > 0 && discount === 0) {
+    tax = 0;
   }
+
+  // In summary mode, enforce a single clean summary item whose math reconciles with totalAmount.
+  if (extractionMode === "summary" && totalAmount > 0) {
+    const netSubtotal = Math.max(0, totalAmount - tax + discount);
+    const summaryLabel =
+      cleanedItems[0]?.item_name ||
+      sanitizePlainText(raw.merchant_name, 120) ||
+      "Total belanja struk";
+    cleanedItems = [
+      {
+        item_name: summaryLabel,
+        quantity: 1,
+        unit_price: netSubtotal,
+        total_price: netSubtotal,
+      },
+    ];
+    itemsSum = netSubtotal;
+  } else if (cleanedItems.length === 0 && totalAmount > 0) {
+    const netSubtotal = Math.max(0, totalAmount - tax + discount);
+    cleanedItems.push({
+      item_name:
+        sanitizePlainText(raw.merchant_name, 120) || "Total belanja struk",
+      quantity: 1,
+      unit_price: netSubtotal,
+      total_price: netSubtotal,
+    });
+    itemsSum = netSubtotal;
+  }
+
+  const subtotal = itemsSum || sanitizeMoneyAmount(raw.subtotal);
 
   return {
     merchant_name:
@@ -515,7 +541,12 @@ export async function POST(request: Request) {
       }
 
       const parsedRaw = parseJsonObjectLenient(result.rawJsonText);
-      const normalized = normalizeOcrOutput(parsedRaw, categories, currentYear);
+      const normalized = normalizeOcrOutput(
+        parsedRaw,
+        categories,
+        currentYear,
+        extractionMode
+      );
 
       return NextResponse.json({
         aiUsed: true,
@@ -578,7 +609,12 @@ export async function POST(request: Request) {
       }
 
       const parsedRaw = parseJsonObjectLenient(content);
-      const normalized = normalizeOcrOutput(parsedRaw, categories, currentYear);
+      const normalized = normalizeOcrOutput(
+        parsedRaw,
+        categories,
+        currentYear,
+        extractionMode
+      );
       return NextResponse.json({
         aiUsed: true,
         provider: "gpt-4o-mini",

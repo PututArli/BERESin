@@ -17,9 +17,12 @@ export interface LpjReportComputed {
   periodLabel: string;
   chairpersonLabel: string;
   treasurerLabel: string;
+  hasInitialBudget: boolean;
   initialBudget: number;
   totalSpent: number;
   remainingBalance: number;
+  initialBudgetDisplay: string;
+  remainingBalanceDisplay: string;
   verifiedCount: number;
   needsReviewCount: number;
   categoryRows: CategorySummaryRow[];
@@ -57,8 +60,17 @@ export function computeLpjNarrative(
     treasurerClean || "( ........................................ )";
 
   const initialBudget = Math.max(0, Math.round(project.initialBudget || 0));
+  const hasInitialBudget = initialBudget > 0;
   const totalSpent = receipts.reduce((sum, r) => sum + (r.totalAmount || 0), 0);
-  const remainingBalance = initialBudget - totalSpent;
+  const remainingBalance = hasInitialBudget ? initialBudget - totalSpent : 0;
+  const initialBudgetDisplay = hasInitialBudget
+    ? formatRupiah(initialBudget)
+    : "- (Tanpa dana awal)";
+  const remainingBalanceDisplay = hasInitialBudget
+    ? remainingBalance < 0
+      ? `Kurang ${formatRupiah(Math.abs(remainingBalance))}`
+      : formatRupiah(remainingBalance)
+    : "-";
   const verifiedCount = receipts.filter((r) => r.status === "verified").length;
   const needsReviewCount = receipts.length - verifiedCount;
 
@@ -163,9 +175,12 @@ export function computeLpjNarrative(
     periodLabel,
     chairpersonLabel,
     treasurerLabel,
+    hasInitialBudget,
     initialBudget,
     totalSpent,
     remainingBalance,
+    initialBudgetDisplay,
+    remainingBalanceDisplay,
     verifiedCount,
     needsReviewCount,
     categoryRows,

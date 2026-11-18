@@ -185,9 +185,9 @@ export async function exportProjectToDocx(
       wTableCell("Jumlah Bukti Nota", { bold: true, fillHex: "ECE6DA" }),
     ].join("")}</w:tr>`,
     `<w:tr>${[
-      wTableCell(formatRupiah(narrative.initialBudget), { bold: true }),
+      wTableCell(narrative.initialBudgetDisplay, { bold: true }),
       wTableCell(formatRupiah(narrative.totalSpent), { bold: true }),
-      wTableCell(formatRupiah(narrative.remainingBalance), { bold: true }),
+      wTableCell(narrative.remainingBalanceDisplay, { bold: true }),
       wTableCell(`${receipts.length} Nota`, { bold: true }),
     ].join("")}</w:tr>`,
   ];
@@ -644,9 +644,9 @@ export function exportProjectToHtml(project: Project, receipts: Receipt[]): void
     </thead>
     <tbody>
       <tr>
-        <td><strong>${escapeHtml(formatRupiah(narrative.initialBudget))}</strong></td>
+        <td><strong>${escapeHtml(narrative.initialBudgetDisplay)}</strong></td>
         <td><strong>${escapeHtml(formatRupiah(narrative.totalSpent))}</strong></td>
-        <td><strong>${escapeHtml(formatRupiah(narrative.remainingBalance))}</strong></td>
+        <td><strong>${escapeHtml(narrative.remainingBalanceDisplay)}</strong></td>
         <td><strong>${receipts.length} Nota</strong></td>
       </tr>
     </tbody>
@@ -712,9 +712,9 @@ export function exportProjectToTxt(project: Project, receipts: Receipt[]): void 
     narrative.categoryParagraph,
     "",
     "II. RINGKASAN DANA",
-    `- Dana Awal / Pemasukan : ${formatRupiah(narrative.initialBudget)}`,
+    `- Dana Awal / Pemasukan : ${narrative.initialBudgetDisplay}`,
     `- Total Pengeluaran     : ${formatRupiah(narrative.totalSpent)}`,
-    `- Sisa / Selisih Dana   : ${formatRupiah(narrative.remainingBalance)}`,
+    `- Sisa / Selisih Dana   : ${narrative.remainingBalanceDisplay}`,
     `- Jumlah Bukti Nota     : ${receipts.length} nota (${narrative.verifiedCount} sudah dicek)`,
     "",
     "III. DAFTAR PENGELUARAN PER NOTA",

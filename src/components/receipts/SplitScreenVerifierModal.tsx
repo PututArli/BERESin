@@ -70,6 +70,7 @@ export function SplitScreenVerifierModal({
   const [taxAndService, setTaxAndService] = useState(0);
   const [discount, setDiscount] = useState(0);
   const [totalAmount, setTotalAmount] = useState(0);
+  const [autoSyncTotal, setAutoSyncTotal] = useState(false);
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<ReceiptItem[]>([]);
   const [saving, setSaving] = useState(false);
@@ -80,15 +81,7 @@ export function SplitScreenVerifierModal({
 
   const syncFormFromReceipt = useCallback(
     (r: Receipt) => {
-      setMerchantName(r.merchantName);
-      setTransactionDate(r.transactionDate ?? "");
-      setCategory(r.category || project.categories[0] || "Lain-lain");
-      setPaymentMethod(r.paymentMethod || "Tunai");
-      setTaxAndService(r.taxAndService || 0);
-      setDiscount(r.discount || 0);
-      setTotalAmount(r.totalAmount || 0);
-      setNotes(r.notes || "");
-      setItems(
+      const nextItems =
         r.items.length > 0
           ? r.items.map((it) => ({ ...it }))
           : [
@@ -100,8 +93,30 @@ export function SplitScreenVerifierModal({
                 unitPrice: r.totalAmount || 0,
                 totalPrice: r.totalAmount || 0,
               },
-            ]
+            ];
+      const nextSub = nextItems.reduce(
+        (sum, it) => sum + (Number(it.totalPrice) || 0),
+        0
       );
+      const nextCalc = Math.max(
+        0,
+        nextSub + (Number(r.taxAndService) || 0) - (Number(r.discount) || 0)
+      );
+
+      setMerchantName(r.merchantName);
+      setTransactionDate(r.transactionDate ?? "");
+      setCategory(r.category || project.categories[0] || "Lain-lain");
+      setPaymentMethod(r.paymentMethod || "Tunai");
+      setTaxAndService(r.taxAndService || 0);
+      setDiscount(r.discount || 0);
+      setTotalAmount(r.totalAmount || 0);
+      setAutoSyncTotal(
+        r.imageHash.startsWith("manual-") ||
+          (r.totalAmount || 0) === 0 ||
+          r.totalAmount === nextCalc
+      );
+      setNotes(r.notes || "");
+      setItems(nextItems);
       setFormError(null);
     },
     [project.categories]
@@ -148,9 +163,19 @@ export function SplitScreenVerifierModal({
   );
 
   const calculatedGrandTotal = useMemo(
-    () => itemsSubtotal + (Number(taxAndService) || 0) - (Number(discount) || 0),
+    () =>
+      Math.max(
+        0,
+        itemsSubtotal + (Number(taxAndService) || 0) - (Number(discount) || 0)
+      ),
     [itemsSubtotal, taxAndService, discount]
   );
+
+  useEffect(() => {
+    if (autoSyncTotal) {
+      setTotalAmount(calculatedGrandTotal);
+    }
+  }, [autoSyncTotal, calculatedGrandTotal]);
 
   const discrepancy = useMemo(
     () => totalAmount - calculatedGrandTotal,
@@ -163,6 +188,12 @@ export function SplitScreenVerifierModal({
       const cleanedMerchant = merchantName.trim();
       if (!cleanedMerchant) {
         setFormError("Nama toko wajib diisi.");
+        return null;
+      }
+      if (nextStatus === "verified" && totalAmount <= 0) {
+        setFormError(
+          "Total pembayaran harus lebih dari Rp 0 untuk disahkan (gunakan tombol Simpan bila masih draf)."
+        );
         return null;
       }
 
@@ -254,14 +285,17 @@ export function SplitScreenVerifierModal({
     if (!dialogEl) return;
 
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !saving && !reanalyzing) {
         e.preventDefault();
         onClose();
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !saving && !reanalyzing) {
         e.preventDefault();
-        void handleConfirmVerified(true);
+        const moveNext = receipts.some(
+          (r) => r.id !== activeReceiptId && r.status === "needs_review"
+        );
+        void handleConfirmVerified(moveNext);
         return;
       }
       if (e.key === "Tab" && dialogEl) {
@@ -283,7 +317,7 @@ export function SplitScreenVerifierModal({
 
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, handleConfirmVerified]);
+  }, [activeReceiptId, handleConfirmVerified, onClose, reanalyzing, receipts, saving]);
 
   if (!receipt) return null;
 
@@ -365,6 +399,10 @@ export function SplitScreenVerifierModal({
       ? receipts[activeIndex + 1]
       : null;
 
+  const hasNextNeedsReview = receipts.some(
+    (r) => r.id !== receipt.id && r.status === "needs_review"
+  );
+  const busyForm = saving || reanalyzing;
   const isManualBlank = receipt.imageHash.startsWith("manual-");
 
   return (
@@ -399,7 +437,7 @@ export function SplitScreenVerifierModal({
             {!isManualBlank && onReanalyzeReceipt && (
               <button
                 type="button"
-                disabled={reanalyzing}
+                disabled={busyForm}
                 onClick={() => void handleReanalyze()}
                 className="btn-secondary !px-2.5 text-xs"
               >
@@ -412,7 +450,7 @@ export function SplitScreenVerifierModal({
               <>
                 <button
                   type="button"
-                  disabled={!prevReceipt}
+                  disabled={!prevReceipt || busyForm}
                   onClick={() => prevReceipt && onSelectReceipt(prevReceipt.id)}
                   aria-label="Nota sebelumnya"
                   className="btn-secondary !px-2 min-w-[44px] text-xs"
@@ -421,7 +459,7 @@ export function SplitScreenVerifierModal({
                 </button>
                 <button
                   type="button"
-                  disabled={!nextReceipt}
+                  disabled={!nextReceipt || busyForm}
                   onClick={() => nextReceipt && onSelectReceipt(nextReceipt.id)}
                   aria-label="Nota berikutnya"
                   className="btn-secondary !px-2 min-w-[44px] text-xs"
@@ -452,11 +490,10 @@ export function SplitScreenVerifierModal({
             role="tab"
             aria-selected={mobileTab === "form"}
             onClick={() => setMobileTab("form")}
-            className={`min-h-[44px] rounded-[6px] text-xs font-semibold border ${
-              mobileTab === "form"
+            className={`min-h-[44px] rounded-[6px] text-xs font-semibold border ${mobileTab === "form"
                 ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
                 : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)]"
-            }`}
+              }`}
           >
             Form Data
           </button>
@@ -465,11 +502,10 @@ export function SplitScreenVerifierModal({
             role="tab"
             aria-selected={mobileTab === "image"}
             onClick={() => setMobileTab("image")}
-            className={`min-h-[44px] rounded-[6px] text-xs font-semibold border ${
-              mobileTab === "image"
+            className={`min-h-[44px] rounded-[6px] text-xs font-semibold border ${mobileTab === "image"
                 ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
                 : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-[var(--border-control)]"
-            }`}
+              }`}
           >
             Foto Struk
           </button>
@@ -477,9 +513,8 @@ export function SplitScreenVerifierModal({
 
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:divide-x divide-[var(--border-card)] overflow-hidden">
           <div
-            className={`${
-              mobileTab === "image" ? "flex" : "hidden lg:flex"
-            } lg:col-span-5 flex-col min-h-0 bg-[var(--bg-paper)] h-full`}
+            className={`${mobileTab === "image" ? "flex" : "hidden lg:flex"
+              } lg:col-span-5 flex-col min-h-0 bg-[var(--bg-paper)] h-full`}
           >
             <div className="px-3 py-2 bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] flex items-center justify-between gap-1.5 shrink-0">
               <div className="flex items-center gap-1.5">
@@ -606,9 +641,8 @@ export function SplitScreenVerifierModal({
           </div>
 
           <div
-            className={`${
-              mobileTab === "form" ? "flex" : "hidden lg:flex"
-            } lg:col-span-7 flex-col min-h-0 h-full`}
+            className={`${mobileTab === "form" ? "flex" : "hidden lg:flex"
+              } lg:col-span-7 flex-col min-h-0 h-full`}
             onFocusCapture={(e) => {
               const target = e.target as HTMLElement | null;
               if (
@@ -910,9 +944,11 @@ export function SplitScreenVerifierModal({
                     type="text"
                     inputMode="numeric"
                     value={totalAmount === 0 ? "" : String(totalAmount)}
-                    onChange={(e) =>
-                      setTotalAmount(parseIndonesianMoneyInput(e.target.value))
-                    }
+                    onChange={(e) => {
+                      setAutoSyncTotal(false);
+                      setTotalAmount(parseIndonesianMoneyInput(e.target.value));
+                      if (formError) setFormError(null);
+                    }}
                     placeholder="0"
                     className="input-ledger font-mono-tabular font-bold text-sm"
                   />
@@ -934,7 +970,10 @@ export function SplitScreenVerifierModal({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setTotalAmount(calculatedGrandTotal)}
+                    onClick={() => {
+                      setTotalAmount(calculatedGrandTotal);
+                      setAutoSyncTotal(true);
+                    }}
                     className="btn-secondary !py-1 !px-2.5 text-xs shrink-0"
                   >
                     Samakan
@@ -964,6 +1003,7 @@ export function SplitScreenVerifierModal({
             <div className="px-3 sm:px-5 py-2.5 bg-[var(--bg-subtle)] border-t border-[var(--border-card)] flex items-center gap-2 shrink-0">
               <button
                 type="button"
+                disabled={busyForm}
                 onClick={() => onDeleteReceipt(receipt.id)}
                 aria-label="Hapus nota ini"
                 className="btn-secondary !px-3 min-w-[44px] text-xs"
@@ -974,7 +1014,7 @@ export function SplitScreenVerifierModal({
 
               <button
                 type="button"
-                disabled={saving}
+                disabled={busyForm}
                 onClick={() => void handleSaveDraft()}
                 className="btn-secondary !px-3 text-xs sm:text-sm shrink-0"
               >
@@ -983,14 +1023,20 @@ export function SplitScreenVerifierModal({
 
               <button
                 type="button"
-                disabled={saving}
-                onClick={() => void handleConfirmVerified(true)}
+                disabled={busyForm}
+                onClick={() => void handleConfirmVerified(hasNextNeedsReview)}
                 className="btn-stamp flex-1 text-xs sm:text-sm"
               >
                 <StampCheckIcon className="w-4 h-4 shrink-0" />
                 <span>
-                  Sahkan
-                  <span className="hidden sm:inline"> &amp; Lanjut</span>
+                  {hasNextNeedsReview ? (
+                    <>
+                      Sahkan
+                      <span className="hidden sm:inline"> &amp; Lanjut</span>
+                    </>
+                  ) : (
+                    "Sahkan"
+                  )}
                 </span>
               </button>
             </div>
