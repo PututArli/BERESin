@@ -234,27 +234,64 @@ function normalizeOcrOutput(
   };
 }
 
-// Supports both Vertex AI Express Mode (`AQ.*`) and Gemini Developer API (`AIza*`) with automatic model/schema fallback.
+function summarizeGoogleApiError(
+  status: number,
+  googleMessage: string
+): string {
+  const lower = googleMessage.toLowerCase();
+
+  if (lower.includes("referer") || lower.includes("referrer")) {
+    return "Kunci API dibatasi hanya untuk Website (HTTP Referrer). Di pengaturan API Key Google, ubah Application Restrictions menjadi None karena pemindaian dipanggil dari server.";
+  }
+  if (lower.includes("leaked") || lower.includes("compromised")) {
+    return "Kunci API ini terdeteksi bocor oleh Google sehingga dinonaktifkan otomatis. Klik Delete key lalu Create API key baru di Google AI Studio dan tempel ke .env.local (jangan dibagikan ke tempat publik).";
+  }
+  if (lower.includes("quota") || status === 429) {
+    return "Batas pemakaian gratis menit ini sedang penuh. Tunggu sekitar 30 detik lalu coba lagi.";
+  }
+  if (
+    lower.includes("api_key_invalid") ||
+    lower.includes("api key not valid") ||
+    lower.includes("expired") ||
+    status === 401
+  ) {
+    return "Kunci API Gemini tidak valid atau sudah dinonaktifkan. Buat kunci baru di Google AI Studio lalu perbarui GEMINI_API_KEY di .env.local dan restart server.";
+  }
+
+  const safeSnippet = sanitizePlainText(
+    googleMessage.replace(/AQ\.[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]+/g, "[KEY]"),
+    180
+  );
+  return safeSnippet
+    ? `Kunci API ditolak Google (${status}): ${safeSnippet}`
+    : `Layanan pembaca struk menolak permintaan (kode ${status}).`;
+}
+
+// Calls Gemini API (`generativelanguage.googleapis.com`) first with single `x-goog-api-key` header (required for both `AQ.` auth keys and `AIza` keys), falling back to Vertex Express only if needed.
 async function callGeminiVisionWithFallback(
   apiKey: string,
   promptText: string,
   mimeType: string,
   base64Clean: string
 ): Promise<{ ok: true; rawJsonText: string } | { ok: false; status: number; detail: string }> {
-  const isVertexExpress = apiKey.startsWith("AQ.");
-  const encodedKey = encodeURIComponent(apiKey);
-
-  const endpoints = isVertexExpress
-    ? [
-        `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
-        `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=${encodedKey}`,
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
-      ]
-    : [
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodedKey}`,
-        `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodedKey}`,
-      ];
+  const endpoints: Array<{ url: string; primary: boolean }> = [
+    {
+      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      primary: true,
+    },
+    {
+      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      primary: false,
+    },
+    ...(apiKey.startsWith("AQ.")
+      ? [
+          {
+            url: "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-2.5-flash:generateContent",
+            primary: false,
+          },
+        ]
+      : []),
+  ];
 
   const userContents = [
     {
@@ -290,23 +327,24 @@ async function callGeminiVisionWithFallback(
     },
   });
 
-  const headers = {
+  // Pass strictly one credential header (`x-goog-api-key`) without `?key=` query param to avoid 401 credential conflict.
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "x-goog-api-key": apiKey,
   };
 
-  let lastStatus = 502;
-  let lastDetail = "Layanan pembaca struk belum merespons.";
+  let primaryStatus = 502;
+  let primaryDetail = "Layanan pembaca struk belum merespons.";
 
-  for (const url of endpoints) {
-    let resp = await fetch(url, {
+  for (const endpoint of endpoints) {
+    let resp = await fetch(endpoint.url, {
       method: "POST",
       headers,
       body: payloadWithSchema,
     });
 
     if (resp.status === 400) {
-      resp = await fetch(url, {
+      resp = await fetch(endpoint.url, {
         method: "POST",
         headers,
         body: payloadPlainJson,
@@ -319,19 +357,23 @@ async function callGeminiVisionWithFallback(
       if (extractedText) {
         return { ok: true, rawJsonText: extractedText };
       }
-      lastDetail = "Jawaban pembaca foto kosong.";
+      if (endpoint.primary) {
+        primaryDetail = "Jawaban pembaca foto kosong.";
+      }
       continue;
     }
 
-    lastStatus = resp.status;
-    if (resp.status === 401 || resp.status === 403) {
-      lastDetail = "Kunci API Gemini ditolak atau belum diaktifkan.";
-    } else if (resp.status === 429) {
-      lastDetail = "Antrean pembaca struk sedang penuh, coba beberapa detik lagi.";
+    if (endpoint.primary) {
+      primaryStatus = resp.status;
+      const errJson = (await resp.json().catch(() => null)) as {
+        error?: { message?: string };
+      } | null;
+      const googleMsg = errJson?.error?.message ?? "";
+      primaryDetail = summarizeGoogleApiError(resp.status, googleMsg);
     }
   }
 
-  return { ok: false, status: lastStatus, detail: lastDetail };
+  return { ok: false, status: primaryStatus, detail: primaryDetail };
 }
 
 export async function POST(request: Request) {
