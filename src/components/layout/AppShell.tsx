@@ -92,10 +92,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   href="/"
                   aria-current={pathname === "/" ? "page" : undefined}
-                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border ${
+                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border transition-colors ${
                     pathname === "/"
                       ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
-                      : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-transparent hover:bg-[var(--bg-subtle)]"
+                      : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
                   }`}
                 >
                   <span>Rekap Nota</span>
@@ -104,10 +104,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   href="/kompres"
                   aria-current={pathname.startsWith("/kompres") ? "page" : undefined}
-                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border ${
+                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border transition-colors ${
                     pathname.startsWith("/kompres")
                       ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
-                      : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-transparent hover:bg-[var(--bg-subtle)]"
+                      : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
                   }`}
                 >
                   <span>Kompres Foto</span>
@@ -116,10 +116,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   href="/panduan"
                   aria-current={pathname.startsWith("/panduan") ? "page" : undefined}
-                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border ${
+                  className={`inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-[6px] text-sm font-semibold border transition-colors ${
                     pathname.startsWith("/panduan")
                       ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
-                      : "bg-[var(--bg-surface)] text-[var(--ink-primary)] border-transparent hover:bg-[var(--bg-subtle)]"
+                      : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
                   }`}
                 >
                   <span>Panduan</span>
@@ -249,17 +249,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             <Link
               href="/panduan"
-              className="inline-flex items-center gap-1 min-h-[44px] px-2 font-semibold text-[var(--ink-primary)] underline underline-offset-4"
+              className="btn-secondary !py-1.5 !px-3 text-xs no-underline"
             >
-              <BookGuideIcon className="w-3.5 h-3.5" />
+              <BookGuideIcon className="w-3.5 h-3.5 shrink-0" />
               <span>Panduan</span>
             </Link>
             <button
               type="button"
               onClick={() => setDonateOpen(true)}
-              className="inline-flex items-center gap-1 min-h-[44px] px-2 font-semibold text-[var(--ink-primary)] underline underline-offset-4"
+              className="btn-secondary !py-1.5 !px-3 text-xs"
             >
-              <QrCodeIcon className="w-3.5 h-3.5" />
+              <QrCodeIcon className="w-3.5 h-3.5 shrink-0" />
               <span>QRIS Donasi</span>
             </button>
           </div>

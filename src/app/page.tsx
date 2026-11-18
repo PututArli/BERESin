@@ -22,8 +22,10 @@ import { SplitScreenVerifierModal } from "@/components/receipts/SplitScreenVerif
 import {
   AlertTriangleIcon,
   BookGuideIcon,
+  ChevronDownIcon,
   PdfDocumentIcon,
   PlusBoxIcon,
+  SlidersLedgerIcon,
   SpreadsheetIcon,
   StampCheckIcon,
   TrashBinIcon,
@@ -54,6 +56,7 @@ export default function HomePage() {
   } = useLedger();
 
   const [pdfGrid, setPdfGrid] = useState<PdfGridDensity>("2x2");
+  const [lpjOptionsOpen, setLpjOptionsOpen] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [busyExport, setBusyExport] = useState<"pdf" | "docx" | null>(null);
 
@@ -99,6 +102,16 @@ export default function HomePage() {
   const needsReviewCount = useMemo(
     () => receipts.filter((r) => r.status === "needs_review").length,
     [receipts]
+  );
+
+  const hasCustomLpjMeta = useMemo(
+    () =>
+      Boolean(
+        parseIndonesianMoneyInput(budgetInput) > 0 ||
+          chairpersonInput.trim() ||
+          treasurerInput.trim()
+      ),
+    [budgetInput, chairpersonInput, treasurerInput]
   );
 
   function flushHeaderFields(): Project | null {
@@ -505,96 +518,136 @@ export default function HomePage() {
               </button>
             </div>
 
-            <details className="pt-2 border-t border-[var(--border-subtle)] text-xs sm:text-sm">
-              <summary className="font-semibold text-[var(--ink-secondary)] min-h-[44px] py-1.5 flex items-center justify-between gap-2">
-                <span>Pengaturan LPJ &amp; pratinjau teks otomatis</span>
-              </summary>
-              <div className="pt-3 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                  <div>
-                    <label
-                      htmlFor="opt-dana-awal"
-                      className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
-                    >
-                      Dana Awal (Rp)
-                    </label>
-                    <input
-                      id="opt-dana-awal"
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={20}
-                      value={budgetInput}
-                      onChange={(e) => setBudgetInput(e.target.value)}
-                      onBlur={() => flushHeaderFields()}
-                      placeholder="Opsional"
-                      className="input-ledger font-mono-tabular text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="opt-ketua"
-                      className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
-                    >
-                      Ketua Pelaksana
-                    </label>
-                    <input
-                      id="opt-ketua"
-                      type="text"
-                      maxLength={100}
-                      value={chairpersonInput}
-                      onChange={(e) => setChairpersonInput(e.target.value)}
-                      onBlur={() => flushHeaderFields()}
-                      placeholder="Opsional"
-                      className="input-ledger text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="opt-bendahara"
-                      className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
-                    >
-                      Bendahara
-                    </label>
-                    <input
-                      id="opt-bendahara"
-                      type="text"
-                      maxLength={100}
-                      value={treasurerInput}
-                      onChange={(e) => setTreasurerInput(e.target.value)}
-                      onBlur={() => flushHeaderFields()}
-                      placeholder="Opsional"
-                      className="input-ledger text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="select-grid-pdf"
-                      className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
-                    >
-                      Lampiran PDF
-                    </label>
-                    <select
-                      id="select-grid-pdf"
-                      value={pdfGrid}
-                      onChange={(e) => setPdfGrid(e.target.value as PdfGridDensity)}
-                      className="input-ledger text-sm"
-                    >
-                      <option value="2x2">4 foto / halaman</option>
-                      <option value="2x3">6 foto / halaman</option>
-                    </select>
-                  </div>
-                </div>
+            <div className="pt-2.5 border-t border-[var(--border-subtle)]">
+              <button
+                type="button"
+                aria-expanded={lpjOptionsOpen}
+                aria-controls="panel-pengaturan-lpj"
+                onClick={() => setLpjOptionsOpen((prev) => !prev)}
+                className={`w-full min-h-[54px] px-3 sm:px-3.5 py-2.5 rounded-[6px] border-[1.5px] flex items-center justify-between gap-2.5 text-left transition-colors active:translate-y-[1px] ${
+                  lpjOptionsOpen
+                    ? "bg-[var(--bg-subtle)] border-[var(--border-strong)]"
+                    : "bg-[var(--bg-paper)] hover:bg-[var(--bg-subtle)] border-[var(--border-control)]"
+                }`}
+              >
+                <span className="flex items-start sm:items-center gap-2.5 min-w-0">
+                  <SlidersLedgerIcon className="w-4 h-4 shrink-0 mt-0.5 sm:mt-0 text-[var(--ink-primary)]" />
+                  <span className="min-w-0 block">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-bold text-xs sm:text-sm text-[var(--ink-primary)] leading-snug">
+                        Pengaturan LPJ &amp; Pratinjau Otomatis
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded-[4px] bg-[var(--bg-surface)] border border-[var(--border-control)] font-mono-tabular text-[11px] font-semibold text-[var(--ink-secondary)] leading-none">
+                        {hasCustomLpjMeta ? "Opsional · Terisi" : "Opsional"}
+                      </span>
+                    </span>
+                    <span className="block text-[11px] sm:text-xs text-[var(--ink-secondary)] leading-snug mt-0.5">
+                      Dana awal, nama penanda tangan &amp; cek teks narasi
+                    </span>
+                  </span>
+                </span>
 
-                <div className="p-3 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] space-y-2 text-xs text-[var(--ink-secondary)] leading-relaxed">
-                  <p className="font-bold text-[var(--ink-primary)]">
-                    Pratinjau Narasi LPJ Otomatis:
-                  </p>
-                  <p>{narrative.openingParagraph}</p>
-                  <p>{narrative.financialParagraph}</p>
-                  <p>{narrative.categoryParagraph}</p>
+                <span className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-[5px] bg-[var(--bg-surface)] border border-[var(--border-control)] text-xs font-semibold text-[var(--ink-primary)]">
+                  <span>{lpjOptionsOpen ? "Tutup" : "Atur"}</span>
+                  <ChevronDownIcon
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${
+                      lpjOptionsOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </span>
+              </button>
+
+              {lpjOptionsOpen && (
+                <div
+                  id="panel-pengaturan-lpj"
+                  className="mt-2.5 p-3 sm:p-3.5 rounded-[6px] bg-[var(--bg-paper)] border border-[var(--border-card)] space-y-3"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                    <div>
+                      <label
+                        htmlFor="opt-dana-awal"
+                        className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                      >
+                        Dana Awal (Rp)
+                      </label>
+                      <input
+                        id="opt-dana-awal"
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={20}
+                        value={budgetInput}
+                        onChange={(e) => setBudgetInput(e.target.value)}
+                        onBlur={() => flushHeaderFields()}
+                        placeholder="Opsional"
+                        className="input-ledger font-mono-tabular text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="opt-ketua"
+                        className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                      >
+                        Ketua Pelaksana
+                      </label>
+                      <input
+                        id="opt-ketua"
+                        type="text"
+                        maxLength={100}
+                        value={chairpersonInput}
+                        onChange={(e) => setChairpersonInput(e.target.value)}
+                        onBlur={() => flushHeaderFields()}
+                        placeholder="Opsional"
+                        className="input-ledger text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="opt-bendahara"
+                        className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                      >
+                        Bendahara
+                      </label>
+                      <input
+                        id="opt-bendahara"
+                        type="text"
+                        maxLength={100}
+                        value={treasurerInput}
+                        onChange={(e) => setTreasurerInput(e.target.value)}
+                        onBlur={() => flushHeaderFields()}
+                        placeholder="Opsional"
+                        className="input-ledger text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="select-grid-pdf"
+                        className="block text-xs font-semibold text-[var(--ink-secondary)] mb-1"
+                      >
+                        Lampiran PDF
+                      </label>
+                      <select
+                        id="select-grid-pdf"
+                        value={pdfGrid}
+                        onChange={(e) => setPdfGrid(e.target.value as PdfGridDensity)}
+                        className="input-ledger text-sm"
+                      >
+                        <option value="2x2">4 foto / halaman</option>
+                        <option value="2x3">6 foto / halaman</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-[6px] bg-[var(--bg-surface)] border border-[var(--border-card)] space-y-2 text-xs text-[var(--ink-secondary)] leading-relaxed">
+                    <p className="font-bold text-[var(--ink-primary)]">
+                      Pratinjau Narasi LPJ Otomatis:
+                    </p>
+                    <p>{narrative.openingParagraph}</p>
+                    <p>{narrative.financialParagraph}</p>
+                    <p>{narrative.categoryParagraph}</p>
+                  </div>
                 </div>
-              </div>
-            </details>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-2 px-0.5">

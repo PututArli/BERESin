@@ -395,3 +395,43 @@ export function RefreshBatchIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function SlidersLedgerIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M4 7h4M12 7h8M4 17h10M18 17h2" />
+      <rect x="8" y="4.5" width="4" height="5" />
+      <rect x="14" y="14.5" width="4" height="5" />
+    </svg>
+  );
+}
+
+export function ChevronDownIcon(props: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}

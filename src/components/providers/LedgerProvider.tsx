@@ -9,7 +9,6 @@ import React, {
   useRef,
   useState,
 } from "react";
-import imageCompression from "browser-image-compression";
 import type {
   AppSettings,
   CompressedPhotoItem,
@@ -30,10 +29,11 @@ import {
   updateWorkspaceMeta,
 } from "@/lib/storage";
 import {
-  computeBlobHash,
   findDuplicateReceipt,
+  formatReferenceNumber,
   todayIsoDate,
 } from "@/lib/format";
+import { compressPhotoFast, prepareReceiptImageFast } from "@/lib/fast-image";
 import { createManualNoteDataUrl } from "@/lib/manual-note-image";
 import { sanitizePlainText, verifyImageMagicBytes } from "@/lib/security";
 
@@ -105,27 +105,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultPdfGrid: "2x2",
 };
 
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("Gagal membaca berkas gambar."));
-    reader.readAsDataURL(blob);
-  });
-}
-
-function getImageDimensions(url: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () =>
-      resolve({
-        width: img.naturalWidth || 800,
-        height: img.naturalHeight || 600,
-      });
-    img.onerror = () => resolve({ width: 800, height: 600 });
-    img.src = url;
-  });
-}
+const OCR_CONCURRENCY = 3;
+const COMPRESS_CONCURRENCY = 4;
 
 // Strips path separators and unsafe characters before packaging filenames into downloads or ZIP archives.
 function buildSafeOutputFilename(originalName: string, mime: string): string {
@@ -393,12 +374,18 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       const rawCandidates = Array.from(fileList);
       if (rawCandidates.length === 0) return { firstZeroReceiptId: null };
 
+      const magicChecks = await Promise.all(
+        rawCandidates.map(async (candidate) => ({
+          candidate,
+          ok: await verifyImageMagicBytes(candidate),
+        }))
+      );
+
       const verifiedFiles: File[] = [];
       let skippedCount = 0;
-      for (const candidate of rawCandidates) {
-        const isGenuineImage = await verifyImageMagicBytes(candidate);
-        if (isGenuineImage) {
-          verifiedFiles.push(candidate);
+      for (const entry of magicChecks) {
+        if (entry.ok) {
+          verifiedFiles.push(entry.candidate);
         } else {
           skippedCount += 1;
         }
@@ -416,120 +403,154 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       const abortCtrl = new AbortController();
       receiptAbortRef.current = abortCtrl;
 
-      let noticeMessage =
+      const noticeMessage =
         skippedCount > 0
           ? `${skippedCount} file dilewati (hanya menerima JPG, PNG, WebP maks. 25 MB).`
           : "";
       setReceiptError(noticeMessage);
       setUploadingReceipts(true);
+      setReceiptProgress({
+        current: 1,
+        total: verifiedFiles.length,
+        fileName: verifiedFiles[0].name,
+        mode: lockedMode,
+      });
 
       let firstZeroId: string | null = null;
       let addedCount = 0;
 
       try {
-        for (let i = 0; i < verifiedFiles.length; i += 1) {
-          if (abortCtrl.signal.aborted) break;
-
-          const file = verifiedFiles[i];
-          setReceiptProgress({
-            current: i + 1,
-            total: verifiedFiles.length,
-            fileName: file.name,
-            mode: lockedMode,
-          });
-
-          let compressed: Blob = file;
-          try {
-            compressed = await imageCompression(file, {
-              maxSizeMB: 1.8,
-              maxWidthOrHeight: 2048,
-              initialQuality: 0.88,
-              fileType: "image/jpeg",
-              useWebWorker: false,
-            });
-          } catch {
-            compressed = file;
+        // Reserve reference numbers upfront so concurrent OCR workers keep deterministic NOTA-00X ordering.
+        const firstRef = await nextReferenceNumber(curProject.id);
+        let baseSeq = parseInt(firstRef.replace(/\D/g, ""), 10) || 1;
+        for (const existing of receiptsRef.current) {
+          const match = existing.referenceNumber.match(/(\d+)$/);
+          if (match) {
+            const seq = parseInt(match[1], 10);
+            if (seq >= baseSeq) baseSeq = seq + 1;
           }
-
-          if (abortCtrl.signal.aborted) break;
-
-          const [dataUrl, imageHash, refNum] = await Promise.all([
-            blobToDataUrl(compressed),
-            computeBlobHash(compressed),
-            nextReferenceNumber(curProject.id),
-          ]);
-
-          if (abortCtrl.signal.aborted) break;
-
-          const receiptId = crypto.randomUUID();
-          const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
-            dataUrl,
-            compressed.type || "image/jpeg",
-            file.name,
-            curProject.categories,
-            lockedMode,
-            abortCtrl.signal
-          );
-
-          if (abortCtrl.signal.aborted) break;
-
-          if (errorDetail) {
-            noticeMessage = errorDetail;
-            setReceiptError(errorDetail);
-          }
-
-          const confidence = extracted?.confidence_score ?? 0.5;
-          const autoVerified =
-            aiUsed && confidence >= 0.85 && (extracted?.total_amount ?? 0) > 0;
-
-          const nextItem: Receipt = {
-            id: receiptId,
-            projectId: curProject.id,
-            referenceNumber: refNum,
-            imageUrl: dataUrl,
-            imageHash,
-            extractionMode: lockedMode,
-            merchantName: extracted?.merchant_name || "Struk Belum Terbaca",
-            transactionDate: extracted?.transaction_date ?? todayIsoDate(),
-            category:
-              extracted?.category && curProject.categories.includes(extracted.category)
-                ? extracted.category
-                : curProject.categories[0] ?? "Lain-lain",
-            subtotal: extracted?.subtotal ?? extracted?.total_amount ?? 0,
-            taxAndService: extracted?.tax_and_service ?? 0,
-            discount: extracted?.discount ?? 0,
-            totalAmount: extracted?.total_amount ?? 0,
-            paymentMethod: extracted?.payment_method ?? "Tunai",
-            confidenceScore: confidence,
-            warningMessage: extracted?.warning_message ?? errorDetail ?? null,
-            isDuplicate: false,
-            duplicateOfRef: null,
-            status: autoVerified ? "verified" : "needs_review",
-            notes: "",
-            items: (extracted?.items ?? []).map((it) => ({
-              id: crypto.randomUUID(),
-              receiptId,
-              itemName: it.item_name,
-              quantity: it.quantity,
-              unitPrice: it.unit_price,
-              totalPrice: it.total_price,
-            })),
-            createdAt: new Date().toISOString(),
-          };
-
-          const saved = await saveReceipt(nextItem);
-          addedCount += 1;
-          if (verifiedFiles.length === 1 && saved.totalAmount === 0) {
-            firstZeroId = saved.id;
-          }
-
-          // Stream each receipt into state immediately so finished items survive even if batch is cancelled later.
-          setReceipts((prev) =>
-            [...prev, saved].sort((a, b) =>
-              a.referenceNumber.localeCompare(b.referenceNumber)
-            )
-          );
         }
+
+        let nextIdx = 0;
+        let finishedCount = 0;
+        let saveChain = Promise.resolve();
+
+        const runOcrWorker = async () => {
+          while (!abortCtrl.signal.aborted) {
+            const idx = nextIdx;
+            nextIdx += 1;
+            if (idx >= verifiedFiles.length) break;
+
+            const file = verifiedFiles[idx];
+            const refNum = formatReferenceNumber(baseSeq + idx);
+
+            let dataUrl: string;
+            let mimeType: string;
+            let imageHash: string;
+            try {
+              const prepared = await prepareReceiptImageFast(file);
+              dataUrl = prepared.dataUrl;
+              mimeType = prepared.mimeType;
+              imageHash = prepared.imageHash;
+            } catch {
+              continue;
+            }
+
+            if (abortCtrl.signal.aborted) break;
+
+            const receiptId = crypto.randomUUID();
+            const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
+              dataUrl,
+              mimeType,
+              file.name,
+              curProject.categories,
+              lockedMode,
+              abortCtrl.signal
+            );
+
+            if (abortCtrl.signal.aborted) break;
+
+            if (errorDetail) {
+              setReceiptError(errorDetail);
+            }
+
+            const confidence = extracted?.confidence_score ?? 0.5;
+            const autoVerified =
+              aiUsed && confidence >= 0.85 && (extracted?.total_amount ?? 0) > 0;
+
+            const nextItem: Receipt = {
+              id: receiptId,
+              projectId: curProject.id,
+              referenceNumber: refNum,
+              imageUrl: dataUrl,
+              imageHash,
+              extractionMode: lockedMode,
+              merchantName: extracted?.merchant_name || "Struk Belum Terbaca",
+              transactionDate: extracted?.transaction_date ?? todayIsoDate(),
+              category:
+                extracted?.category && curProject.categories.includes(extracted.category)
+                  ? extracted.category
+                  : curProject.categories[0] ?? "Lain-lain",
+              subtotal: extracted?.subtotal ?? extracted?.total_amount ?? 0,
+              taxAndService: extracted?.tax_and_service ?? 0,
+              discount: extracted?.discount ?? 0,
+              totalAmount: extracted?.total_amount ?? 0,
+              paymentMethod: extracted?.payment_method ?? "Tunai",
+              confidenceScore: confidence,
+              warningMessage: extracted?.warning_message ?? errorDetail ?? null,
+              isDuplicate: false,
+              duplicateOfRef: null,
+              status: autoVerified ? "verified" : "needs_review",
+              notes: "",
+              items: (extracted?.items ?? []).map((it) => ({
+                id: crypto.randomUUID(),
+                receiptId,
+                itemName: it.item_name,
+                quantity: it.quantity,
+                unitPrice: it.unit_price,
+                totalPrice: it.total_price,
+              })),
+              createdAt: new Date().toISOString(),
+            };
+
+            // Serialize IndexedDB writes so duplicate checks across concurrent batch siblings stay deterministic.
+            const saved = await new Promise<Receipt>((resolve, reject) => {
+              saveChain = saveChain.then(() =>
+                saveReceipt(nextItem).then(resolve, reject)
+              );
+            });
+
+            if (abortCtrl.signal.aborted) break;
+
+            addedCount += 1;
+            finishedCount += 1;
+            if (verifiedFiles.length === 1 && saved.totalAmount === 0) {
+              firstZeroId = saved.id;
+            }
+
+            setReceipts((prev) =>
+              [...prev, saved].sort((a, b) =>
+                a.referenceNumber.localeCompare(b.referenceNumber)
+              )
+            );
+
+            const activeIdx = Math.min(verifiedFiles.length - 1, nextIdx - 1);
+            setReceiptProgress({
+              current: Math.min(verifiedFiles.length, finishedCount + 1),
+              total: verifiedFiles.length,
+              fileName:
+                finishedCount < verifiedFiles.length
+                  ? verifiedFiles[activeIdx]?.name ?? file.name
+                  : file.name,
+              mode: lockedMode,
+            });
+          }
+        };
+
+        const workerCount = Math.min(OCR_CONCURRENCY, verifiedFiles.length);
+        await Promise.all(
+          Array.from({ length: workerCount }, () => runOcrWorker())
+        );
 
         if (addedCount > 0) {
           announcePolite(`${addedCount} foto struk selesai diproses.`);
@@ -558,11 +579,26 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       const mimeMatch = targetReceipt.imageUrl.match(
         /^data:(image\/[a-z+]+);base64,/i
       );
-      const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      let payloadMime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      let payloadUrl = targetReceipt.imageUrl;
+
+      if (payloadUrl.length > 950_000) {
+        try {
+          const rawBlob = await (await fetch(payloadUrl)).blob();
+          const shrinkFile = new File([rawBlob], "reanalyze.jpg", {
+            type: payloadMime,
+          });
+          const shrunk = await prepareReceiptImageFast(shrinkFile);
+          payloadUrl = shrunk.dataUrl;
+          payloadMime = shrunk.mimeType;
+        } catch {
+          payloadUrl = targetReceipt.imageUrl;
+        }
+      }
 
       const { extracted, aiUsed, errorDetail } = await requestOcrExtraction(
-        targetReceipt.imageUrl,
-        mime,
+        payloadUrl,
+        payloadMime,
         targetReceipt.referenceNumber,
         curProject.categories,
         targetReceipt.extractionMode || extractionMode
@@ -748,21 +784,15 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       lockedFormat: OutputFormat,
       existingId?: string
     ): Promise<CompressedPhotoItem> => {
-      const desiredMime = lockedFormat === "keep" ? file.type : lockedFormat;
-      const compressedBlob = await imageCompression(file, {
-        maxSizeMB: lockedMaxMb,
-        maxWidthOrHeight: lockedDim > 0 ? lockedDim : undefined,
-        fileType: desiredMime || undefined,
-        useWebWorker: false,
-      });
-
-      const finalBlob =
-        lockedFormat === "keep" && compressedBlob.size >= file.size
-          ? file
-          : compressedBlob;
+      const targetMaxBytes = Math.round(lockedMaxMb * 1024 * 1024);
+      const { blob: finalBlob, width, height } = await compressPhotoFast(
+        file,
+        targetMaxBytes,
+        lockedDim,
+        lockedFormat
+      );
 
       const previewUrl = URL.createObjectURL(finalBlob);
-      const dims = await getImageDimensions(previewUrl);
 
       return {
         id: existingId ?? crypto.randomUUID(),
@@ -773,8 +803,8 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
         compressedBytes: finalBlob.size,
         previewUrl,
         blob: finalBlob,
-        width: dims.width,
-        height: dims.height,
+        width,
+        height,
       };
     },
     []
@@ -791,12 +821,18 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       const candidates = Array.from(fileList);
       if (candidates.length === 0) return;
 
+      const magicChecks = await Promise.all(
+        candidates.map(async (candidate) => ({
+          candidate,
+          ok: await verifyImageMagicBytes(candidate),
+        }))
+      );
+
       const verifiedFiles: File[] = [];
       let skippedCount = 0;
-      for (const candidate of candidates) {
-        const ok = await verifyImageMagicBytes(candidate);
-        if (ok) {
-          verifiedFiles.push(candidate);
+      for (const entry of magicChecks) {
+        if (entry.ok) {
+          verifiedFiles.push(entry.candidate);
         } else {
           skippedCount += 1;
         }
@@ -822,30 +858,54 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
 
       compressCancelFlagRef.current = false;
       setCompressProcessing(true);
+      setCompressProgress({
+        current: 1,
+        total: verifiedFiles.length,
+        fileName: verifiedFiles[0].name,
+      });
+
+      let nextIdx = 0;
       let completedCount = 0;
 
       try {
-        for (let i = 0; i < verifiedFiles.length; i += 1) {
-          if (compressCancelFlagRef.current) break;
-          const file = verifiedFiles[i];
-          setCompressProgress({
-            current: i + 1,
-            total: verifiedFiles.length,
-            fileName: file.name,
-          });
-          const item = await compressSingleFile(
-            file,
-            lockedMaxMb,
-            lockedDim,
-            lockedFormat
-          );
-          if (compressCancelFlagRef.current) {
-            URL.revokeObjectURL(item.previewUrl);
-            break;
+        const runCompressWorker = async () => {
+          while (!compressCancelFlagRef.current) {
+            const idx = nextIdx;
+            nextIdx += 1;
+            if (idx >= verifiedFiles.length) break;
+
+            const file = verifiedFiles[idx];
+            const item = await compressSingleFile(
+              file,
+              lockedMaxMb,
+              lockedDim,
+              lockedFormat
+            );
+
+            if (compressCancelFlagRef.current) {
+              URL.revokeObjectURL(item.previewUrl);
+              break;
+            }
+
+            completedCount += 1;
+            setCompressedItems((prev) => [item, ...prev]);
+
+            const activeIdx = Math.min(verifiedFiles.length - 1, nextIdx - 1);
+            setCompressProgress({
+              current: Math.min(verifiedFiles.length, completedCount + 1),
+              total: verifiedFiles.length,
+              fileName:
+                completedCount < verifiedFiles.length
+                  ? verifiedFiles[activeIdx]?.name ?? file.name
+                  : file.name,
+            });
           }
-          completedCount += 1;
-          setCompressedItems((prev) => [item, ...prev]);
-        }
+        };
+
+        const workerCount = Math.min(COMPRESS_CONCURRENCY, verifiedFiles.length);
+        await Promise.all(
+          Array.from({ length: workerCount }, () => runCompressWorker())
+        );
 
         if (completedCount > 0) {
           setAppliedCompressKey(lockedKey);
@@ -886,34 +946,69 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
     setCompressError("");
     compressCancelFlagRef.current = false;
     setCompressProcessing(true);
-    const updatedBatch: CompressedPhotoItem[] = [];
+    setCompressProgress({
+      current: 1,
+      total: sources.length,
+      fileName: sources[0].sourceFile!.name,
+    });
+
+    const updatedSlots: Array<CompressedPhotoItem | null> = new Array(
+      sources.length
+    ).fill(null);
+    let nextIdx = 0;
+    let completedCount = 0;
 
     try {
-      for (let i = 0; i < sources.length; i += 1) {
-        if (compressCancelFlagRef.current) break;
-        const prevItem = sources[i];
-        const srcFile = prevItem.sourceFile!;
-        setCompressProgress({
-          current: i + 1,
-          total: sources.length,
-          fileName: srcFile.name,
-        });
-        const rebuilt = await compressSingleFile(
-          srcFile,
-          lockedMaxMb,
-          lockedDim,
-          lockedFormat,
-          prevItem.id
-        );
-        updatedBatch.push(rebuilt);
-      }
+      const runRecompressWorker = async () => {
+        while (!compressCancelFlagRef.current) {
+          const idx = nextIdx;
+          nextIdx += 1;
+          if (idx >= sources.length) break;
+
+          const prevItem = sources[idx];
+          const srcFile = prevItem.sourceFile!;
+          const rebuilt = await compressSingleFile(
+            srcFile,
+            lockedMaxMb,
+            lockedDim,
+            lockedFormat,
+            prevItem.id
+          );
+
+          if (compressCancelFlagRef.current) {
+            URL.revokeObjectURL(rebuilt.previewUrl);
+            break;
+          }
+
+          updatedSlots[idx] = rebuilt;
+          completedCount += 1;
+          const activeIdx = Math.min(sources.length - 1, nextIdx - 1);
+          setCompressProgress({
+            current: Math.min(sources.length, completedCount + 1),
+            total: sources.length,
+            fileName:
+              completedCount < sources.length
+                ? sources[activeIdx]?.sourceFile?.name ?? srcFile.name
+                : srcFile.name,
+          });
+        }
+      };
+
+      const workerCount = Math.min(COMPRESS_CONCURRENCY, sources.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, () => runRecompressWorker())
+      );
 
       if (compressCancelFlagRef.current) {
-        for (const partial of updatedBatch) {
-          URL.revokeObjectURL(partial.previewUrl);
+        for (const partial of updatedSlots) {
+          if (partial) URL.revokeObjectURL(partial.previewUrl);
         }
         return;
       }
+
+      const updatedBatch = updatedSlots.filter(
+        (it): it is CompressedPhotoItem => it !== null
+      );
 
       for (const oldItem of curItems) {
         URL.revokeObjectURL(oldItem.previewUrl);
@@ -922,8 +1017,8 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       setAppliedCompressKey(lockedKey);
       announcePolite(`${updatedBatch.length} foto diproses ulang.`);
     } catch (err) {
-      for (const partial of updatedBatch) {
-        URL.revokeObjectURL(partial.previewUrl);
+      for (const partial of updatedSlots) {
+        if (partial) URL.revokeObjectURL(partial.previewUrl);
       }
       setCompressError(
         err instanceof Error ? err.message : "Gagal memproses ulang foto."

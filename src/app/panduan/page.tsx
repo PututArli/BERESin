@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import {
+  ChevronDownIcon,
   PhotoCompressIcon,
   ReceiptSheetIcon,
 } from "@/components/icons/LedgerIcons";
@@ -169,12 +170,13 @@ export default function PanduanPage() {
           {FAQ_ITEMS.map((item) => (
             <details
               key={item.q}
-              className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] px-3.5"
+              className="group rounded-[8px] bg-[var(--bg-surface)] border-[1.5px] border-[var(--border-control)] overflow-hidden"
             >
-              <summary className="min-h-[44px] py-2 font-semibold text-xs sm:text-sm text-[var(--ink-primary)] flex items-center justify-between gap-2">
+              <summary className="list-none [&::-webkit-details-marker]:hidden min-h-[48px] px-3.5 py-2.5 font-semibold text-xs sm:text-sm text-[var(--ink-primary)] hover:bg-[var(--bg-subtle)] transition-colors flex items-center justify-between gap-3">
                 <span>{item.q}</span>
+                <ChevronDownIcon className="w-4 h-4 shrink-0 text-[var(--ink-primary)] transition-transform duration-150 group-open:rotate-180" />
               </summary>
-              <p className="pb-3 pt-1 text-xs sm:text-sm text-[var(--ink-secondary)] border-t border-[var(--border-subtle)]">
+              <p className="px-3.5 pb-3.5 pt-2 text-xs sm:text-sm text-[var(--ink-secondary)] bg-[var(--bg-paper)] border-t border-[var(--border-subtle)]">
                 {item.a}
               </p>
             </details>

@@ -293,7 +293,9 @@ function summarizeGoogleApiError(
     : `Layanan pembaca struk menolak permintaan (kode ${status}).`;
 }
 
-let cachedWorkingEndpointUrl: string | null = null;
+type PayloadTier = "low_thinking" | "schema" | "plain";
+
+let cachedWorkingEndpoint: { url: string; tier: PayloadTier } | null = null;
 
 async function discoverAvailableFlashEndpoint(apiKey: string): Promise<string | null> {
   try {
@@ -316,7 +318,13 @@ async function discoverAvailableFlashEndpoint(apiKey: string): Promise<string | 
         !m.name.includes("imagen")
     );
     const preferred =
-      candidates.find((m) => m.name?.includes("flash") && !m.name?.includes("2.5") && !m.name?.includes("2.0") && !m.name?.includes("1.5")) ??
+      candidates.find(
+        (m) =>
+          m.name?.includes("flash") &&
+          !m.name?.includes("2.5") &&
+          !m.name?.includes("2.0") &&
+          !m.name?.includes("1.5")
+      ) ??
       candidates.find((m) => m.name?.includes("flash")) ??
       candidates[0];
 
@@ -330,7 +338,7 @@ async function discoverAvailableFlashEndpoint(apiKey: string): Promise<string | 
   }
 }
 
-// Calls current Gemini Flash models (`gemini-3.8-flash` / `gemini-flash-latest`) with automatic model discovery and caching.
+// Calls Gemini Flash (`gemini-3.8-flash` first) with `thinkingLevel: "LOW"` and caches the working endpoint + payload tier.
 async function callGeminiVisionWithFallback(
   apiKey: string,
   promptText: string,
@@ -338,14 +346,13 @@ async function callGeminiVisionWithFallback(
   base64Clean: string
 ): Promise<{ ok: true; rawJsonText: string } | { ok: false; status: number; detail: string }> {
   const candidateUrls: string[] = [
-    ...(cachedWorkingEndpointUrl ? [cachedWorkingEndpointUrl] : []),
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+    ...(cachedWorkingEndpoint ? [cachedWorkingEndpoint.url] : []),
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent",
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
   ];
 
-  // Deduplicate while preserving priority order.
   const uniqueUrls = Array.from(new Set(candidateUrls));
 
   const userContents = [
@@ -365,24 +372,37 @@ async function callGeminiVisionWithFallback(
     },
   ];
 
-  const payloadWithSchema = JSON.stringify({
-    contents: userContents,
-    generationConfig: {
-      temperature: 0.1,
-      responseMimeType: "application/json",
-      responseSchema: GEMINI_RESPONSE_SCHEMA,
-    },
-  });
+  // `thinkingLevel: "LOW"` is the lowest supported reasoning tier on Gemini 3.8 Flash (MINIMAL returns 400).
+  const payloadsByTier: Record<PayloadTier, string> = {
+    low_thinking: JSON.stringify({
+      contents: userContents,
+      generationConfig: {
+        temperature: 0,
+        thinkingConfig: {
+          thinkingLevel: "LOW",
+        },
+        responseMimeType: "application/json",
+        responseSchema: GEMINI_RESPONSE_SCHEMA,
+      },
+    }),
+    schema: JSON.stringify({
+      contents: userContents,
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+        responseSchema: GEMINI_RESPONSE_SCHEMA,
+      },
+    }),
+    plain: JSON.stringify({
+      contents: userContents,
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
+    }),
+  };
 
-  const payloadPlainJson = JSON.stringify({
-    contents: userContents,
-    generationConfig: {
-      temperature: 0.1,
-      responseMimeType: "application/json",
-    },
-  });
-
-  // Pass strictly one credential header (`x-goog-api-key`) without `?key=` query param to avoid 401 credential conflict.
+  // Send only `x-goog-api-key` without `?key=` query param to prevent 401 duplicate-credential rejection on AQ.* keys.
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "x-goog-api-key": apiKey,
@@ -390,29 +410,39 @@ async function callGeminiVisionWithFallback(
 
   let lastStatus = 502;
   let lastDetail = "Layanan pembaca struk belum merespons.";
-
   let suggestedModelUrl: string | null = null;
 
   async function tryEndpoint(url: string): Promise<string | null> {
-    let resp = await fetch(url, {
-      method: "POST",
-      headers,
-      body: payloadWithSchema,
-    });
+    const tierOrder: PayloadTier[] =
+      cachedWorkingEndpoint?.url === url
+        ? [
+            cachedWorkingEndpoint.tier,
+            ...(["low_thinking", "schema", "plain"] as PayloadTier[]).filter(
+              (t) => t !== cachedWorkingEndpoint!.tier
+            ),
+          ]
+        : ["low_thinking", "schema", "plain"];
 
-    if (resp.status === 400) {
+    let resp: Response | null = null;
+    let usedTier: PayloadTier = tierOrder[0];
+
+    for (const tier of tierOrder) {
+      usedTier = tier;
       resp = await fetch(url, {
         method: "POST",
         headers,
-        body: payloadPlainJson,
+        body: payloadsByTier[tier],
       });
+      if (resp.status !== 400) break;
     }
+
+    if (!resp) return null;
 
     if (resp.ok) {
       const json = await resp.json();
       const extractedText = extractJsonTextFromGemini(json);
       if (extractedText) {
-        cachedWorkingEndpointUrl = url;
+        cachedWorkingEndpoint = { url, tier: usedTier };
         return extractedText;
       }
       lastDetail = "Jawaban pembaca foto kosong.";
@@ -448,7 +478,6 @@ async function callGeminiVisionWithFallback(
     }
   }
 
-  // If every static model alias returned 404, query `/v1beta/models` dynamically for this API key's active Flash model.
   if (lastStatus === 404) {
     const discoveredUrl = await discoverAvailableFlashEndpoint(apiKey);
     if (discoveredUrl && !uniqueUrls.includes(discoveredUrl)) {
@@ -468,7 +497,7 @@ export async function POST(request: Request) {
   }
 
   const ip = getClientIp(request);
-  if (!checkRateLimit(`ocr-post:${ip}`, 45, 60_000)) {
+  if (!checkRateLimit(`ocr-post:${ip}`, 120, 60_000)) {
     return NextResponse.json(
       { error: "Terlalu banyak pemindaian beruntun. Tunggu sebentar lalu coba lagi." },
       { status: 429 }
