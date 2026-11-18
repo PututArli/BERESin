@@ -6,7 +6,7 @@ Reading this as: Aplikasi web satu layar pengubah foto nota ke Excel/PDF serta p
 ## Resolusi Aturan R-37 & R-23
 1. **Lucide Icons vs R-04**: Menggunakan ikon SVG kustom bergaya garis dokumen kuitansi hanya pada kontrol yang membutuhkan penanda fungsi.
 2. **Tanpa Data Simulasi vs R-38**: Sesuai arahan pemilik proyek, aplikasi sama sekali tidak memuat data contoh atau simulasi agar pengguna tidak bingung; layar awal langsung bersih pada kotak unggah nota asli.
-3. **QR E-Wallet Donasi vs R-23**: Ruang QR donasi menampilkan kotak penanda jujur `[PLACEHOLDER QR E-WALLET]` sampai gambar QR asli ditaruh ke `public/qr-donasi.png`, dan otomatis menampilkan gambar tersebut begitu berkas tersedia.
+3. **QRIS Donasi Asli (`public/qr-donasi.jpeg`)**: Gambar QRIS resmi pemilik proyek ditampilkan dengan bingkai putih berdimensi intrinsik penuh (`1136x1600`) agar pemindai kamera tetap kontras di tema terang maupun gelap, dilengkapi tombol unduh QRIS bagi pengguna ponsel.
 
 ## Jiwa & Karakter Produk
 BERESinHAHAY membuang keramaian dashboard berlapis. Begitu pengguna membuka halaman, mereka langsung mengerti fungsi utamanya dalam satu pandangan: unggah foto nota, cek sekilas bila perlu, lalu langsung unduh Excel atau PDF LPJ. Fitur pendamping kompresi foto diletakkan di satu tab berdampingan dengan pola kerja yang sama sederhananya.

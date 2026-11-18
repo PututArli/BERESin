@@ -1,4 +1,0 @@
-Letakkan file gambar QR E-Wallet Anda di folder ini dengan nama:
-qr-donasi.png (atau qr-donasi.jpg / qr-donasi.webp)
-
-Tombol "Donasi" pada aplikasi BERESinHAHAY akan otomatis mendeteksi dan menampilkan gambar tersebut.

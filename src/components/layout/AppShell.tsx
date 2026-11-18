@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useLedger } from "@/components/providers/LedgerProvider";
 import {
   CloseXIcon,
+  DownloadTrayIcon,
   PhotoCompressIcon,
   QrCodeIcon,
   ReceiptSheetIcon,
@@ -17,25 +18,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { settings, toggleTheme } = useLedger();
 
   const [donateOpen, setDonateOpen] = useState(false);
-  const [qrImageSrc, setQrImageSrc] = useState<string | null>(null);
-
   const donateModalRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!donateOpen) return;
-    let active = true;
-    fetch("/api/qr-status")
-      .then((r) => r.json())
-      .then((json: { exists?: boolean; src?: string | null }) => {
-        if (active) setQrImageSrc(json.exists && json.src ? json.src : null);
-      })
-      .catch(() => {
-        if (active) setQrImageSrc(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [donateOpen]);
 
   useEffect(() => {
     if (!donateOpen) return;
@@ -201,7 +184,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="inline-flex items-center gap-1.5 min-h-[44px] px-2 underline underline-offset-4 font-semibold text-[var(--ink-primary)]"
           >
             <QrCodeIcon className="w-4 h-4" />
-            <span>Dukung via QR E-Wallet</span>
+            <span>Dukung via QRIS</span>
           </button>
         </div>
       </footer>
@@ -230,7 +213,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   Dukung BERESinHAHAY
                 </h2>
                 <p className="text-xs sm:text-sm text-[var(--ink-secondary)] mt-0.5">
-                  Seluruh fitur di web ini gratis tanpa kuota. Jika terbantu, Anda boleh berdonasi sukarela melalui e-wallet berikut.
+                  Seluruh fitur di web ini gratis tanpa kuota. Jika terbantu, Anda dapat berdonasi sukarela lewat QRIS (mendukung semua e-wallet &amp; mobile banking).
                 </p>
               </div>
               <button
@@ -243,39 +226,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
             </div>
 
-            <div className="p-4 rounded-[8px] bg-[var(--bg-paper)] border-2 border-dashed border-[var(--border-control)] text-center">
-              {qrImageSrc ? (
-                <img
-                  src={qrImageSrc}
-                  alt="Kode QR E-Wallet Donasi BERESinHAHAY"
-                  width={220}
-                  height={220}
-                  className="mx-auto w-[220px] h-[220px] max-w-full object-contain rounded-[4px] bg-white p-2 border border-[var(--border-control)]"
-                />
-              ) : (
-                <div className="py-6 px-2 space-y-2">
-                  <span className="stamp-ref">[PLACEHOLDER QR E-WALLET]</span>
-                  <p className="text-xs sm:text-sm text-[var(--ink-primary)] font-semibold mt-2">
-                    Gambar QR E-Wallet belum dipasang
-                  </p>
-                  <p className="text-xs text-[var(--ink-secondary)]">
-                    Simpan gambar QR e-wallet Anda ke{" "}
-                    <code className="font-mono-tabular font-semibold">
-                      public/qr-donasi.png
-                    </code>{" "}
-                    (atau <code className="font-mono-tabular font-semibold">.jpg</code>) agar langsung tampil otomatis di kotak ini.
-                  </p>
-                </div>
-              )}
+            <div className="p-3 sm:p-4 rounded-[8px] bg-[var(--bg-paper)] border border-[var(--border-control)] text-center space-y-2.5">
+              <img
+                src="/qr-donasi.jpeg"
+                alt="Kode QRIS Donasi BERESinHAHAY (NMID ID1026641946102)"
+                width={1136}
+                height={1600}
+                loading="eager"
+                decoding="async"
+                className="mx-auto w-full max-w-[256px] sm:max-w-[280px] h-auto rounded-[6px] bg-white p-1.5 border border-[var(--border-control)]"
+              />
+              <p className="text-xs text-[var(--ink-secondary)] font-mono-tabular">
+                BERESinHAHAY · NMID: ID1026641946102
+              </p>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setDonateOpen(false)}
-              className="btn-ledger w-full"
-            >
-              Selesai
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <a
+                href="/qr-donasi.jpeg"
+                download="QRIS-Donasi-BERESinHAHAY.jpeg"
+                className="btn-secondary w-full no-underline"
+              >
+                <DownloadTrayIcon className="w-4 h-4 shrink-0" />
+                <span>Unduh QRIS</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setDonateOpen(false)}
+                className="btn-ledger w-full"
+              >
+                Selesai
+              </button>
+            </div>
           </div>
         </div>
       )}
