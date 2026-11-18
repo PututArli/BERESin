@@ -11,7 +11,6 @@ import {
   AlertTriangleIcon,
   BookGuideIcon,
   DownloadTrayIcon,
-  PhotoCompressIcon,
   RefreshBatchIcon,
   TrashBinIcon,
   UploadStackIcon,
@@ -153,15 +152,13 @@ export default function PhotoCompressorPage() {
       }
 
       if (verifiedFiles.length === 0) {
-        setErrorMsg(
-          "File tidak dapat dibuka: pilih foto asli berformat JPG, PNG, atau WebP (maksimal 25 MB per foto)."
-        );
+        setErrorMsg("Format ditolak: gunakan foto JPG, PNG, atau WebP (maks. 25 MB).");
         return;
       }
 
       setErrorMsg(
         skippedCount > 0
-          ? `${skippedCount} file dilewati karena bukan foto JPG, PNG, atau WebP (maksimal 25 MB).`
+          ? `${skippedCount} file dilewati (hanya menerima JPG, PNG, WebP maks. 25 MB).`
           : ""
       );
       setProcessing(true);
@@ -181,13 +178,13 @@ export default function PhotoCompressorPage() {
 
         setItems((prev) => [...batch, ...prev]);
         setAppliedConfigKey(currentConfigKey);
-        announcePolite(`${batch.length} foto selesai dikecilkan ukurannya.`);
+        announcePolite(`${batch.length} foto selesai dikompres.`);
       } catch (err) {
         for (const partial of batch) {
           URL.revokeObjectURL(partial.previewUrl);
         }
         setErrorMsg(
-          err instanceof Error ? err.message : "Terjadi kendala saat memproses foto."
+          err instanceof Error ? err.message : "Gagal memproses foto."
         );
       } finally {
         setProcessing(false);
@@ -227,15 +224,13 @@ export default function PhotoCompressorPage() {
       }
       setItems(updatedBatch);
       setAppliedConfigKey(currentConfigKey);
-      announcePolite(`${updatedBatch.length} foto selesai diproses ulang.`);
+      announcePolite(`${updatedBatch.length} foto diproses ulang.`);
     } catch (err) {
       for (const partial of updatedBatch) {
         URL.revokeObjectURL(partial.previewUrl);
       }
       setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : "Terjadi kendala saat memproses ulang foto."
+        err instanceof Error ? err.message : "Gagal memproses ulang foto."
       );
     } finally {
       setProcessing(false);
@@ -305,7 +300,7 @@ export default function PhotoCompressorPage() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(zipUrl), 2000);
-      announcePolite("File ZIP hasil kompres foto berhasil diunduh.");
+      announcePolite("ZIP berhasil diunduh.");
     } finally {
       setZipping(false);
     }
@@ -332,42 +327,42 @@ export default function PhotoCompressorPage() {
     : 0;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-10 md:py-12 space-y-6 sm:space-y-8">
-      <section className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div className="space-y-2">
-          <h1 className="font-serif-ledger font-bold text-[clamp(1.65rem,4vw,2.35rem)] leading-tight text-[var(--ink-primary)] tracking-tight">
-            Kecilkan ukuran banyak foto sekaligus.
+    <div className="max-w-4xl mx-auto px-3.5 sm:px-6 py-5 sm:py-9 space-y-5 sm:space-y-6">
+      <section className="flex items-start sm:items-center justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="font-serif-ledger font-bold text-[clamp(1.45rem,3.8vw,2.1rem)] leading-tight text-[var(--ink-primary)] tracking-tight">
+            Kompres ukuran banyak foto.
           </h1>
-          <p className="text-sm sm:text-base text-[var(--ink-secondary)] max-w-2xl">
-            Pilih puluhan foto sekaligus dari HP atau laptop, gratis tanpa daftar akun. Foto diproses langsung di perangkat Anda sendiri sehingga cepat dan pribadi.
+          <p className="text-xs sm:text-sm text-[var(--ink-secondary)]">
+            Diproses instan di perangkat Anda tanpa diunggah ke server.
           </p>
         </div>
 
         <Link
           href="/panduan#cara-kompres-foto"
-          className="btn-secondary text-xs sm:text-sm no-underline shrink-0 self-start sm:self-auto"
+          className="btn-secondary !px-3 text-xs no-underline shrink-0"
         >
           <BookGuideIcon className="w-4 h-4 shrink-0" />
-          <span>Cara Pakai &amp; Tips</span>
+          <span>Panduan</span>
         </Link>
       </section>
 
-      <section className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] p-4 sm:p-5 space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 items-end">
+      <section className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] p-3.5 sm:p-4 space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-end">
           <div className="sm:col-span-2 lg:col-span-6">
             <span className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5">
-              Batas Ukuran Hasil
+              Target Ukuran
             </span>
             <div
               role="group"
-              aria-label="Pilih batas ukuran hasil kompres"
-              className="grid grid-cols-3 gap-2"
+              aria-label="Target ukuran kompresi"
+              className="grid grid-cols-3 gap-1.5"
             >
               {(
                 [
-                  { id: "200kb", label: "Di bawah 200 KB" },
-                  { id: "500kb", label: "Di bawah 500 KB" },
-                  { id: "1mb", label: "Di bawah 1 MB" },
+                  { id: "200kb", label: "< 200 KB" },
+                  { id: "500kb", label: "< 500 KB" },
+                  { id: "1mb", label: "< 1 MB" },
                 ] as Array<{ id: TargetSizePreset; label: string }>
               ).map((opt) => {
                 const active = preset === opt.id;
@@ -377,7 +372,7 @@ export default function PhotoCompressorPage() {
                     type="button"
                     aria-pressed={active}
                     onClick={() => setPreset(opt.id)}
-                    className={`min-h-[44px] px-2 rounded-[6px] text-xs font-semibold border text-center ${
+                    className={`min-h-[44px] px-2 rounded-[6px] text-xs font-mono-tabular font-semibold border ${
                       active
                         ? "bg-[var(--color-ledger)] text-[var(--color-ledger-ink)] border-[var(--color-ledger)]"
                         : "bg-[var(--bg-paper)] text-[var(--ink-primary)] border-[var(--border-control)] hover:bg-[var(--bg-subtle)]"
@@ -395,7 +390,7 @@ export default function PhotoCompressorPage() {
               htmlFor="select-max-dim"
               className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5"
             >
-              Kualitas Lebar Gambar
+              Lebar Maksimal
             </label>
             <select
               id="select-max-dim"
@@ -403,9 +398,9 @@ export default function PhotoCompressorPage() {
               onChange={(e) => setMaxDimension(Number(e.target.value))}
               className="input-ledger text-sm"
             >
-              <option value="1200">1200 px (Hemat ukuran)</option>
-              <option value="1600">1600 px (Tetap tajam)</option>
-              <option value="0">Ukuran asli foto</option>
+              <option value="1200">1200 px</option>
+              <option value="1600">1600 px</option>
+              <option value="0">Ukuran asli</option>
             </select>
           </div>
 
@@ -414,7 +409,7 @@ export default function PhotoCompressorPage() {
               htmlFor="select-out-format"
               className="block text-xs font-bold uppercase text-[var(--ink-secondary)] mb-1.5"
             >
-              Jenis File Hasil
+              Format
             </label>
             <select
               id="select-out-format"
@@ -422,36 +417,32 @@ export default function PhotoCompressorPage() {
               onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
               className="input-ledger text-sm"
             >
-              <option value="keep">Ikuti file asli</option>
-              <option value="image/jpeg">JPG (Umum dipakai)</option>
-              <option value="image/webp">WebP (Paling kecil)</option>
+              <option value="keep">Asli</option>
+              <option value="image/jpeg">JPG</option>
+              <option value="image/webp">WebP</option>
             </select>
           </div>
         </div>
 
         {settingsChangedForBatch && !processing && (
-          <div className="pt-3 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-            <p className="text-xs sm:text-sm text-[var(--ink-secondary)]">
-              Pilihan ukuran baru belum diterapkan ke{" "}
-              <strong className="font-mono-tabular text-[var(--ink-primary)]">
-                {items.length} foto
-              </strong>{" "}
-              di bawah.
-            </p>
+          <div className="pt-2.5 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2">
+            <span className="text-xs text-[var(--ink-secondary)]">
+              Terapkan ke <strong className="font-mono-tabular">{items.length}</strong> foto?
+            </span>
             <button
               type="button"
               onClick={() => void recompressExistingBatch()}
-              className="btn-ledger text-xs sm:text-sm shrink-0"
+              className="btn-ledger !py-1.5 !px-3 text-xs shrink-0"
             >
               <RefreshBatchIcon className="w-4 h-4 shrink-0" />
-              <span>Proses Ulang Semua ({items.length})</span>
+              <span>Proses Ulang</span>
             </button>
           </div>
         )}
       </section>
 
       <section
-        aria-label="Area pilih foto untuk dikompres"
+        aria-label="Pilih foto untuk dikompres"
         onDragOver={(e) => {
           e.preventDefault();
           setDragging(true);
@@ -462,7 +453,7 @@ export default function PhotoCompressorPage() {
           setDragging(false);
           void handleFiles(e.dataTransfer.files);
         }}
-        className={`rounded-[8px] border-2 border-dashed p-5 sm:p-8 md:p-10 text-center transition-colors ${
+        className={`rounded-[8px] border-2 border-dashed p-5 sm:p-7 text-center transition-colors ${
           dragging
             ? "bg-[var(--verified-bg)] border-[var(--border-strong)]"
             : "bg-[var(--bg-surface)] border-[var(--border-control)]"
@@ -479,28 +470,24 @@ export default function PhotoCompressorPage() {
           className="sr-only"
         />
 
-        <div className="max-w-md mx-auto space-y-3">
+        <div className="max-w-md mx-auto space-y-2">
           <label
             htmlFor="input-kompres-foto"
-            className={`btn-stamp text-sm sm:text-base px-4 sm:px-6 py-3 w-full sm:w-auto ${
+            className={`btn-stamp text-sm sm:text-base px-5 py-2.5 w-full sm:w-auto ${
               processing ? "opacity-60 pointer-events-none" : ""
             }`}
           >
             <UploadStackIcon className="w-5 h-5 shrink-0" />
             <span>
               {processing
-                ? "Sedang Memproses Foto..."
+                ? "Memproses..."
                 : items.length > 0
-                ? `Tambah Foto Lagi (${items.length} Masuk)`
-                : "Pilih Foto (Bisa Banyak Sekaligus)"}
+                ? `Tambah Foto (${items.length})`
+                : "Pilih Foto"}
             </span>
           </label>
-          <p className="text-xs sm:text-sm text-[var(--ink-secondary)]">
-            Pilih puluhan foto dari galeri/folder, tarik ke kotak ini, atau tempel gambar dengan{" "}
-            <kbd className="font-mono-tabular font-semibold px-1.5 py-0.5 rounded-[3px] border border-[var(--border-control)] bg-[var(--bg-paper)]">
-              Ctrl+V
-            </kbd>{" "}
-            (JPG, PNG, WebP · maks. 25 MB/foto).
+          <p className="text-xs text-[var(--ink-secondary)]">
+            Bisa banyak file sekaligus · JPG, PNG, WebP (maks. 25 MB)
           </p>
         </div>
 
@@ -508,23 +495,21 @@ export default function PhotoCompressorPage() {
           <div
             role="status"
             aria-live="polite"
-            className="mt-5 p-3.5 rounded-[6px] bg-[var(--bg-subtle)] border border-[var(--border-card)] text-left max-w-lg mx-auto space-y-2"
+            className="mt-4 p-3 rounded-[6px] bg-[var(--bg-subtle)] border border-[var(--border-card)] text-left max-w-md mx-auto space-y-1.5"
           >
             <div className="flex items-center justify-between gap-2 text-xs font-mono-tabular text-[var(--ink-primary)]">
-              <span className="truncate">
-                Memproses: <strong>{batchProgress.fileName}</strong>
-              </span>
+              <span className="truncate">{batchProgress.fileName}</span>
               <span className="shrink-0 font-bold">
-                {batchProgress.current} / {batchProgress.total}
+                {batchProgress.current}/{batchProgress.total}
               </span>
             </div>
             <div
               role="progressbar"
-              aria-label="Progres kompresi foto"
+              aria-label="Progres kompresi"
               aria-valuenow={batchProgress.current}
               aria-valuemin={0}
               aria-valuemax={batchProgress.total}
-              className="h-2.5 w-full rounded-[3px] bg-[var(--bg-paper)] border border-[var(--border-control)] overflow-hidden"
+              className="h-2 w-full rounded-[3px] bg-[var(--bg-paper)] border border-[var(--border-control)] overflow-hidden"
             >
               <div
                 className="h-full bg-[var(--color-ledger)]"
@@ -538,60 +523,59 @@ export default function PhotoCompressorPage() {
       {errorMsg && (
         <div
           role="alert"
-          className="p-4 rounded-[8px] border-2 flex items-start gap-2.5 text-sm font-semibold"
+          className="p-3.5 rounded-[8px] border-2 flex items-start gap-2 text-xs sm:text-sm font-semibold"
           style={{
             backgroundColor: "var(--stamp-tint-bg)",
             color: "var(--stamp-tint-ink)",
             borderColor: "var(--stamp-tint-border)",
           }}
         >
-          <AlertTriangleIcon className="w-5 h-5 shrink-0 mt-0.5" />
+          <AlertTriangleIcon className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{errorMsg}</span>
         </div>
       )}
 
       {items.length > 0 && (
-        <section aria-label="Daftar foto hasil kompres" className="space-y-4">
-          <div className="rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-strong)] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="text-sm">
+        <section aria-label="Hasil kompresi" className="space-y-3">
+          <div className="rounded-[8px] bg-[var(--bg-surface)] border-2 border-[var(--border-strong)] p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="text-xs sm:text-sm">
               <p className="font-bold text-[var(--ink-primary)] font-mono-tabular">
-                {items.length} foto selesai · Ukuran berkurang {totalStats.savedPct}%
+                {items.length} foto · Hemat {totalStats.savedPct}%
               </p>
               <p className="text-xs font-mono-tabular text-[var(--ink-secondary)]">
-                Dari total {formatFileSize(totalStats.orig)} menjadi{" "}
-                {formatFileSize(totalStats.comp)}
+                {formatFileSize(totalStats.orig)} &rarr; {formatFileSize(totalStats.comp)}
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={clearAll}
-                className="btn-secondary text-xs flex-1 sm:flex-initial"
+                className="btn-secondary !py-1.5 !px-3 text-xs"
               >
                 <TrashBinIcon className="w-4 h-4 shrink-0" />
-                <span>Hapus Semua</span>
+                <span>Reset</span>
               </button>
 
               <button
                 type="button"
                 disabled={zipping}
                 onClick={() => void downloadAllZip()}
-                className="btn-ledger text-sm flex-1 sm:flex-initial"
+                className="btn-ledger text-xs sm:text-sm flex-1 sm:flex-initial"
               >
                 <DownloadTrayIcon className="w-4 h-4 shrink-0" />
                 <span>
                   {zipping
-                    ? "Menyiapkan ZIP..."
+                    ? "Membuat ZIP..."
                     : items.length > 1
-                    ? `Unduh Semua ${items.length} Foto (.zip)`
-                    : "Unduh Foto"}
+                    ? `Unduh ZIP (${items.length})`
+                    : "Unduh"}
                 </span>
               </button>
             </div>
           </div>
 
-          <ul className="space-y-3">
+          <ul className="space-y-2.5">
             {items.map((item) => {
               const savedPct =
                 item.originalBytes > 0
@@ -608,79 +592,57 @@ export default function PhotoCompressorPage() {
               return (
                 <li
                   key={item.id}
-                  className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="rounded-[8px] bg-[var(--bg-surface)] border border-[var(--border-card)] p-3 flex items-center justify-between gap-2.5"
                 >
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <div className="w-14 h-14 shrink-0 rounded-[4px] border border-[var(--border-control)] overflow-hidden bg-white flex items-center justify-center">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className="w-12 h-12 shrink-0 rounded-[4px] border border-[var(--border-control)] overflow-hidden bg-white">
                       <img
                         src={item.previewUrl}
                         alt={`Pratinjau ${item.outputName}`}
-                        width={56}
-                        height={56}
+                        width={48}
+                        height={48}
                         className="w-full h-full object-cover"
                       />
                     </div>
 
                     <div className="min-w-0 flex-1">
-                      <p className="font-bold text-sm sm:text-base text-[var(--ink-primary)] truncate">
+                      <p className="font-bold text-xs sm:text-sm text-[var(--ink-primary)] truncate">
                         {item.outputName}
                       </p>
-                      <p className="text-xs font-mono-tabular text-[var(--ink-secondary)] mt-0.5">
-                        {formatFileSize(item.originalBytes)} jadi{" "}
+                      <p className="text-xs font-mono-tabular text-[var(--ink-secondary)]">
+                        {formatFileSize(item.originalBytes)} &rarr;{" "}
                         <strong className="text-[var(--ink-primary)]">
                           {formatFileSize(item.compressedBytes)}
                         </strong>{" "}
-                        ({item.width}x{item.height} px)
+                        (-{savedPct}%)
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between sm:justify-end gap-2 pt-2.5 sm:pt-0 border-t sm:border-t-0 border-[var(--border-subtle)]">
-                    <span
-                      className="px-2.5 py-1 rounded-[4px] border text-xs font-mono-tabular font-bold"
-                      style={{
-                        backgroundColor: "var(--verified-bg)",
-                        color: "var(--verified-ink)",
-                        borderColor: "var(--verified-border)",
-                      }}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => downloadSingle(item)}
+                      className="btn-secondary !py-1.5 !px-2.5 text-xs"
                     >
-                      Hemat {savedPct}%
-                    </span>
+                      <DownloadTrayIcon className="w-4 h-4 shrink-0" />
+                      <span className="hidden sm:inline">Unduh</span>
+                    </button>
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => downloadSingle(item)}
-                        className="btn-secondary !py-1.5 !px-3.5 text-xs"
-                      >
-                        <DownloadTrayIcon className="w-4 h-4 shrink-0" />
-                        <span>Unduh</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => removeOne(item.id)}
-                        aria-label={`Hapus ${item.outputName}`}
-                        className="btn-secondary !p-2.5 min-w-[44px]"
-                      >
-                        <TrashBinIcon className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeOne(item.id)}
+                      aria-label={`Hapus ${item.outputName}`}
+                      className="btn-secondary !p-2 min-w-[44px]"
+                    >
+                      <TrashBinIcon className="w-4 h-4" />
+                    </button>
                   </div>
                 </li>
               );
             })}
           </ul>
         </section>
-      )}
-
-      {items.length === 0 && !processing && (
-        <div className="flex items-center justify-center gap-2 text-xs sm:text-sm text-[var(--ink-muted)] pt-1 text-center">
-          <PhotoCompressIcon className="w-4 h-4 shrink-0" />
-          <span>
-            Belum ada foto yang dipilih. Anda bisa memilih puluhan foto sekaligus.
-          </span>
-        </div>
       )}
     </div>
   );

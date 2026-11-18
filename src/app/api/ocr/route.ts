@@ -267,31 +267,60 @@ function summarizeGoogleApiError(
     : `Layanan pembaca struk menolak permintaan (kode ${status}).`;
 }
 
-// Calls Gemini API (`generativelanguage.googleapis.com`) first with single `x-goog-api-key` header (required for both `AQ.` auth keys and `AIza` keys), falling back to Vertex Express only if needed.
+let cachedWorkingEndpointUrl: string | null = null;
+
+async function discoverAvailableFlashEndpoint(apiKey: string): Promise<string | null> {
+  try {
+    const resp = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+      headers: { "x-goog-api-key": apiKey },
+    });
+    if (!resp.ok) return null;
+    const json = (await resp.json()) as {
+      models?: Array<{
+        name?: string;
+        supportedGenerationMethods?: string[];
+      }>;
+    };
+    const candidates = (json.models ?? []).filter(
+      (m) =>
+        typeof m.name === "string" &&
+        m.supportedGenerationMethods?.includes("generateContent") &&
+        !m.name.includes("embedding") &&
+        !m.name.includes("tts") &&
+        !m.name.includes("imagen")
+    );
+    const preferred =
+      candidates.find((m) => m.name?.includes("flash") && !m.name?.includes("2.5") && !m.name?.includes("2.0") && !m.name?.includes("1.5")) ??
+      candidates.find((m) => m.name?.includes("flash")) ??
+      candidates[0];
+
+    if (!preferred?.name) return null;
+    const cleanModelPath = preferred.name.startsWith("models/")
+      ? preferred.name
+      : `models/${preferred.name}`;
+    return `https://generativelanguage.googleapis.com/v1beta/${cleanModelPath}:generateContent`;
+  } catch {
+    return null;
+  }
+}
+
+// Calls current Gemini Flash models (`gemini-3.8-flash` / `gemini-flash-latest`) with automatic model discovery and caching.
 async function callGeminiVisionWithFallback(
   apiKey: string,
   promptText: string,
   mimeType: string,
   base64Clean: string
 ): Promise<{ ok: true; rawJsonText: string } | { ok: false; status: number; detail: string }> {
-  const endpoints: Array<{ url: string; primary: boolean }> = [
-    {
-      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-      primary: true,
-    },
-    {
-      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-      primary: false,
-    },
-    ...(apiKey.startsWith("AQ.")
-      ? [
-          {
-            url: "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-2.5-flash:generateContent",
-            primary: false,
-          },
-        ]
-      : []),
+  const candidateUrls: string[] = [
+    ...(cachedWorkingEndpointUrl ? [cachedWorkingEndpointUrl] : []),
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
   ];
+
+  // Deduplicate while preserving priority order.
+  const uniqueUrls = Array.from(new Set(candidateUrls));
 
   const userContents = [
     {
@@ -333,18 +362,20 @@ async function callGeminiVisionWithFallback(
     "x-goog-api-key": apiKey,
   };
 
-  let primaryStatus = 502;
-  let primaryDetail = "Layanan pembaca struk belum merespons.";
+  let lastStatus = 502;
+  let lastDetail = "Layanan pembaca struk belum merespons.";
 
-  for (const endpoint of endpoints) {
-    let resp = await fetch(endpoint.url, {
+  let suggestedModelUrl: string | null = null;
+
+  async function tryEndpoint(url: string): Promise<string | null> {
+    let resp = await fetch(url, {
       method: "POST",
       headers,
       body: payloadWithSchema,
     });
 
     if (resp.status === 400) {
-      resp = await fetch(endpoint.url, {
+      resp = await fetch(url, {
         method: "POST",
         headers,
         body: payloadPlainJson,
@@ -355,25 +386,54 @@ async function callGeminiVisionWithFallback(
       const json = await resp.json();
       const extractedText = extractJsonTextFromGemini(json);
       if (extractedText) {
-        return { ok: true, rawJsonText: extractedText };
+        cachedWorkingEndpointUrl = url;
+        return extractedText;
       }
-      if (endpoint.primary) {
-        primaryDetail = "Jawaban pembaca foto kosong.";
-      }
-      continue;
+      lastDetail = "Jawaban pembaca foto kosong.";
+      return null;
     }
 
-    if (endpoint.primary) {
-      primaryStatus = resp.status;
-      const errJson = (await resp.json().catch(() => null)) as {
-        error?: { message?: string };
-      } | null;
-      const googleMsg = errJson?.error?.message ?? "";
-      primaryDetail = summarizeGoogleApiError(resp.status, googleMsg);
+    lastStatus = resp.status;
+    const errJson = (await resp.json().catch(() => null)) as {
+      error?: { message?: string };
+    } | null;
+    const googleMsg = errJson?.error?.message ?? "";
+    const matchSuggested = googleMsg.match(/use\s+(models\/[a-zA-Z0-9._-]+)/i);
+    if (matchSuggested?.[1]) {
+      suggestedModelUrl = `https://generativelanguage.googleapis.com/v1beta/${matchSuggested[1]}:generateContent`;
+    }
+    lastDetail = summarizeGoogleApiError(resp.status, googleMsg);
+    return null;
+  }
+
+  for (const url of uniqueUrls) {
+    const text = await tryEndpoint(url);
+    if (text) {
+      return { ok: true, rawJsonText: text };
+    }
+    if (lastStatus === 401 || lastStatus === 403 || lastStatus === 429) {
+      return { ok: false, status: lastStatus, detail: lastDetail };
+    }
+    if (suggestedModelUrl && !uniqueUrls.includes(suggestedModelUrl)) {
+      const retrySuggested = await tryEndpoint(suggestedModelUrl);
+      if (retrySuggested) {
+        return { ok: true, rawJsonText: retrySuggested };
+      }
     }
   }
 
-  return { ok: false, status: primaryStatus, detail: primaryDetail };
+  // If every static model alias returned 404, query `/v1beta/models` dynamically for this API key's active Flash model.
+  if (lastStatus === 404) {
+    const discoveredUrl = await discoverAvailableFlashEndpoint(apiKey);
+    if (discoveredUrl && !uniqueUrls.includes(discoveredUrl)) {
+      const text = await tryEndpoint(discoveredUrl);
+      if (text) {
+        return { ok: true, rawJsonText: text };
+      }
+    }
+  }
+
+  return { ok: false, status: lastStatus, detail: lastDetail };
 }
 
 export async function POST(request: Request) {
