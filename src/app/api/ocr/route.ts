@@ -260,6 +260,16 @@ function normalizeOcrOutput(
   };
 }
 
+function isDailyQuotaExhausted(googleMessage: string): boolean {
+  const lower = googleMessage.toLowerCase();
+  return (
+    lower.includes("perday") ||
+    lower.includes("per_day") ||
+    lower.includes("per day") ||
+    lower.includes("daily")
+  );
+}
+
 function summarizeGoogleApiError(
   status: number,
   googleMessage: string
@@ -267,13 +277,21 @@ function summarizeGoogleApiError(
   const lower = googleMessage.toLowerCase();
 
   if (lower.includes("referer") || lower.includes("referrer")) {
-    return "Kunci API dibatasi hanya untuk Website (HTTP Referrer). Di pengaturan API Key Google, ubah Application Restrictions menjadi None karena pemindaian dipanggil dari server.";
+    return "Pembaca struk otomatis diblokir pengaturan domain kunci server (HTTP Referrer). Silakan isi data struk secara manual sementara waktu.";
   }
   if (lower.includes("leaked") || lower.includes("compromised")) {
-    return "Kunci API ini terdeteksi bocor oleh Google sehingga dinonaktifkan otomatis. Klik Delete key lalu Create API key baru di Google AI Studio dan tempel ke .env.local (jangan dibagikan ke tempat publik).";
+    return "Kunci akses pembaca otomatis sedang dinonaktifkan oleh penyedia layanan dan perlu diperbarui pengelola web. Silakan isi angka struk secara manual.";
   }
-  if (lower.includes("quota") || status === 429) {
-    return "Batas pemakaian gratis menit ini sedang penuh. Tunggu sekitar 30 detik lalu coba lagi.";
+  if (
+    status === 429 ||
+    lower.includes("quota") ||
+    lower.includes("resource_exhausted") ||
+    lower.includes("rate")
+  ) {
+    if (isDailyQuotaExhausted(googleMessage)) {
+      return "Kuota pembaca struk otomatis hari ini sudah penuh. Foto struk Anda tetap tersimpan di daftar: silakan isi nama toko dan nominalnya secara manual agar laporan LPJ tetap bisa langsung diunduh.";
+    }
+    return "Antrean pembaca struk otomatis sedang padat karena banyak foto diproses berdekatan. Foto Anda tetap tersimpan: tunggu sebentar lalu tekan Baca Ulang, atau isi angkanya secara langsung.";
   }
   if (
     lower.includes("api_key_invalid") ||
@@ -281,28 +299,27 @@ function summarizeGoogleApiError(
     lower.includes("expired") ||
     status === 401
   ) {
-    return "Kunci API Gemini tidak valid atau sudah dinonaktifkan. Buat kunci baru di Google AI Studio lalu perbarui GEMINI_API_KEY di .env.local dan restart server.";
+    return "Layanan pembaca struk otomatis belum aktif pada server ini. Foto struk tetap tersimpan, silakan isi angkanya secara manual.";
   }
 
-  const safeSnippet = sanitizePlainText(
-    googleMessage.replace(/AQ\.[A-Za-z0-9_-]+|AIza[A-Za-z0-9_-]+/g, "[KEY]"),
-    180
-  );
-  return safeSnippet
-    ? `Kunci API ditolak Google (${status}): ${safeSnippet}`
-    : `Layanan pembaca struk menolak permintaan (kode ${status}).`;
+  return "Foto struk belum berhasil dibaca otomatis saat ini. Foto tetap tersimpan di daftar: silakan tekan Baca Ulang atau isi angkanya secara manual.";
 }
 
 type PayloadTier = "low_thinking" | "schema" | "plain";
 
 let cachedWorkingEndpoint: { url: string; tier: PayloadTier } | null = null;
+let cachedDiscoveredUrls: { urls: string[]; expiresAt: number } | null = null;
 
-async function discoverAvailableFlashEndpoint(apiKey: string): Promise<string | null> {
+async function discoverAvailableFlashEndpoints(apiKey: string): Promise<string[]> {
+  if (cachedDiscoveredUrls && Date.now() < cachedDiscoveredUrls.expiresAt) {
+    return cachedDiscoveredUrls.urls;
+  }
+
   try {
     const resp = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
       headers: { "x-goog-api-key": apiKey },
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) return [];
     const json = (await resp.json()) as {
       models?: Array<{
         name?: string;
@@ -313,44 +330,56 @@ async function discoverAvailableFlashEndpoint(apiKey: string): Promise<string | 
       (m) =>
         typeof m.name === "string" &&
         m.supportedGenerationMethods?.includes("generateContent") &&
+        m.name.includes("flash") &&
         !m.name.includes("embedding") &&
         !m.name.includes("tts") &&
-        !m.name.includes("imagen")
+        !m.name.includes("imagen") &&
+        !m.name.includes("audio")
     );
-    const preferred =
-      candidates.find(
-        (m) =>
-          m.name?.includes("flash") &&
-          !m.name?.includes("2.5") &&
-          !m.name?.includes("2.0") &&
-          !m.name?.includes("1.5")
-      ) ??
-      candidates.find((m) => m.name?.includes("flash")) ??
-      candidates[0];
 
-    if (!preferred?.name) return null;
-    const cleanModelPath = preferred.name.startsWith("models/")
-      ? preferred.name
-      : `models/${preferred.name}`;
-    return `https://generativelanguage.googleapis.com/v1beta/${cleanModelPath}:generateContent`;
+    // Order modern Flash-Lite and 3.x Flash models ahead of legacy aliases so quota failover stays fast.
+    candidates.sort((a, b) => {
+      const na = a.name ?? "";
+      const nb = b.name ?? "";
+      const score = (n: string) =>
+        (n.includes("lite") ? 4 : 0) +
+        (!n.includes("2.5") && !n.includes("2.0") && !n.includes("1.5") ? 2 : 0);
+      return score(nb) - score(na);
+    });
+
+    const urls = candidates.map((m) => {
+      const cleanModelPath = m.name!.startsWith("models/")
+        ? m.name!
+        : `models/${m.name!}`;
+      return `https://generativelanguage.googleapis.com/v1beta/${cleanModelPath}:generateContent`;
+    });
+
+    cachedDiscoveredUrls = {
+      urls,
+      expiresAt: Date.now() + 10 * 60_000,
+    };
+    return urls;
   } catch {
-    return null;
+    return [];
   }
 }
 
-// Calls Gemini Flash (`gemini-3.8-flash` first) with `thinkingLevel: "LOW"` and caches the working endpoint + payload tier.
+// Calls Gemini Flash with `thinkingLevel: "LOW"` and fails over across separate Flash / Flash-Lite quota pools on 429/404.
 async function callGeminiVisionWithFallback(
   apiKey: string,
   promptText: string,
   mimeType: string,
   base64Clean: string
-): Promise<{ ok: true; rawJsonText: string } | { ok: false; status: number; detail: string }> {
+): Promise<
+  | { ok: true; rawJsonText: string }
+  | { ok: false; status: number; detail: string; dailyExhausted: boolean }
+> {
   const candidateUrls: string[] = [
     ...(cachedWorkingEndpoint ? [cachedWorkingEndpoint.url] : []),
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent",
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
   ];
 
   const uniqueUrls = Array.from(new Set(candidateUrls));
@@ -409,7 +438,9 @@ async function callGeminiVisionWithFallback(
   };
 
   let lastStatus = 502;
-  let lastDetail = "Layanan pembaca struk belum merespons.";
+  let lastDetail =
+    "Foto struk belum berhasil dibaca otomatis saat ini. Foto tetap tersimpan: silakan tekan Baca Ulang atau isi angkanya secara manual.";
+  let sawDailyExhausted = false;
   let suggestedModelUrl: string | null = null;
 
   async function tryEndpoint(url: string): Promise<string | null> {
@@ -445,15 +476,21 @@ async function callGeminiVisionWithFallback(
         cachedWorkingEndpoint = { url, tier: usedTier };
         return extractedText;
       }
-      lastDetail = "Jawaban pembaca foto kosong.";
       return null;
     }
 
     lastStatus = resp.status;
+    if (resp.status === 429 && cachedWorkingEndpoint?.url === url) {
+      cachedWorkingEndpoint = null;
+    }
+
     const errJson = (await resp.json().catch(() => null)) as {
       error?: { message?: string };
     } | null;
     const googleMsg = errJson?.error?.message ?? "";
+    if (resp.status === 429 && isDailyQuotaExhausted(googleMsg)) {
+      sawDailyExhausted = true;
+    }
     const matchSuggested = googleMsg.match(/use\s+(models\/[a-zA-Z0-9._-]+)/i);
     if (matchSuggested?.[1]) {
       suggestedModelUrl = `https://generativelanguage.googleapis.com/v1beta/${matchSuggested[1]}:generateContent`;
@@ -462,15 +499,24 @@ async function callGeminiVisionWithFallback(
     return null;
   }
 
+  const triedUrls = new Set<string>();
+
   for (const url of uniqueUrls) {
+    triedUrls.add(url);
     const text = await tryEndpoint(url);
     if (text) {
       return { ok: true, rawJsonText: text };
     }
-    if (lastStatus === 401 || lastStatus === 403 || lastStatus === 429) {
-      return { ok: false, status: lastStatus, detail: lastDetail };
+    if (lastStatus === 401 || lastStatus === 403) {
+      return {
+        ok: false,
+        status: lastStatus,
+        detail: lastDetail,
+        dailyExhausted: false,
+      };
     }
-    if (suggestedModelUrl && !uniqueUrls.includes(suggestedModelUrl)) {
+    if (suggestedModelUrl && !triedUrls.has(suggestedModelUrl)) {
+      triedUrls.add(suggestedModelUrl);
       const retrySuggested = await tryEndpoint(suggestedModelUrl);
       if (retrySuggested) {
         return { ok: true, rawJsonText: retrySuggested };
@@ -478,17 +524,27 @@ async function callGeminiVisionWithFallback(
     }
   }
 
-  if (lastStatus === 404) {
-    const discoveredUrl = await discoverAvailableFlashEndpoint(apiKey);
-    if (discoveredUrl && !uniqueUrls.includes(discoveredUrl)) {
-      const text = await tryEndpoint(discoveredUrl);
+  // On 404 or 429, try any remaining Flash / Flash-Lite models available on this project's independent quota buckets.
+  const statusSnapshot = (): number => lastStatus;
+  if (statusSnapshot() === 404 || statusSnapshot() === 429) {
+    const discoveredUrls = await discoverAvailableFlashEndpoints(apiKey);
+    for (const url of discoveredUrls) {
+      if (triedUrls.has(url)) continue;
+      triedUrls.add(url);
+      const text = await tryEndpoint(url);
       if (text) {
         return { ok: true, rawJsonText: text };
       }
+      if (statusSnapshot() === 401 || statusSnapshot() === 403) break;
     }
   }
 
-  return { ok: false, status: lastStatus, detail: lastDetail };
+  return {
+    ok: false,
+    status: lastStatus,
+    detail: lastDetail,
+    dailyExhausted: sawDailyExhausted,
+  };
 }
 
 export async function POST(request: Request) {
@@ -499,7 +555,12 @@ export async function POST(request: Request) {
   const ip = getClientIp(request);
   if (!checkRateLimit(`ocr-post:${ip}`, 120, 60_000)) {
     return NextResponse.json(
-      { error: "Terlalu banyak pemindaian beruntun. Tunggu sebentar lalu coba lagi." },
+      {
+        error:
+          "Antrean pembaca struk otomatis sedang padat. Tunggu beberapa detik lalu tekan Baca Ulang.",
+        rateLimited: true,
+        dailyExhausted: false,
+      },
       { status: 429 }
     );
   }
@@ -564,8 +625,13 @@ export async function POST(request: Request) {
 
       if (!result.ok) {
         return NextResponse.json(
-          { error: result.detail, aiUsed: false },
-          { status: 502 }
+          {
+            error: result.detail,
+            aiUsed: false,
+            rateLimited: result.status === 429,
+            dailyExhausted: result.dailyExhausted,
+          },
+          { status: result.status === 429 ? 429 : 502 }
         );
       }
 
@@ -656,13 +722,16 @@ export async function POST(request: Request) {
         aiUsed: false,
         missingKey: true,
         error:
-          "GEMINI_API_KEY belum terpasang di Environment Variables server (Vercel). Pasang GEMINI_API_KEY di pengaturan proyek lalu Redeploy agar foto struk langsung dianalisis otomatis.",
+          "Pembaca struk otomatis belum diaktifkan pada server ini. Foto Anda tetap tersimpan: silakan isi nama toko dan nominalnya secara manual.",
       },
       { status: 503 }
     );
   } catch {
     return NextResponse.json(
-      { error: "Gagal membaca isi foto struk. Coba tekan Baca Ulang Struk." },
+      {
+        error:
+          "Foto struk belum berhasil dibaca otomatis. Foto tetap tersimpan: silakan tekan Baca Ulang atau isi angkanya secara manual.",
+      },
       { status: 500 }
     );
   }

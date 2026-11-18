@@ -105,8 +105,26 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultPdfGrid: "2x2",
 };
 
-const OCR_CONCURRENCY = 3;
+const OCR_CONCURRENCY = 2;
 const COMPRESS_CONCURRENCY = 4;
+
+function waitAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 // Strips path separators and unsafe characters before packaging filenames into downloads or ZIP archives.
 function buildSafeOutputFilename(originalName: string, mime: string): string {
@@ -310,20 +328,35 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
           headers["x-gemini-api-key"] = settings.geminiApiKey.trim();
         }
 
-        const resp = await fetch("/api/ocr", {
+        const bodyStr = JSON.stringify({
+          imageBase64: imageDataUrl,
+          mimeType: mimeType || "image/jpeg",
+          fileName,
+          categories,
+          extractionMode: mode,
+        });
+
+        let resp = await fetch("/api/ocr", {
           method: "POST",
           headers,
           signal,
-          body: JSON.stringify({
-            imageBase64: imageDataUrl,
-            mimeType: mimeType || "image/jpeg",
-            fileName,
-            categories,
-            extractionMode: mode,
-          }),
+          body: bodyStr,
         });
 
-        const json = await resp.json().catch(() => ({}));
+        let json = await resp.json().catch(() => ({}));
+
+        // Automatically retry once after short cooldown when per-minute OCR queue is momentarily full.
+        if (resp.status === 429 && json?.rateLimited && !json?.dailyExhausted) {
+          await waitAbortable(3500, signal);
+          resp = await fetch("/api/ocr", {
+            method: "POST",
+            headers,
+            signal,
+            body: bodyStr,
+          });
+          json = await resp.json().catch(() => ({}));
+        }
+
         if (resp.ok && json?.data) {
           return {
             extracted: json.data as OcrExtractedPayload,
@@ -338,7 +371,7 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
           errorDetail:
             typeof json?.error === "string"
               ? json.error
-              : "Analisis foto belum berhasil dijalankan.",
+              : "Foto struk belum berhasil dibaca otomatis. Foto tetap tersimpan: silakan tekan Baca Ulang atau isi angkanya secara manual.",
         };
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
